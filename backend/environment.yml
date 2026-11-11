@@ -1,0 +1,8 @@
+# conda stellt nur die Python-Version bereit – alle Pakete verwaltet Poetry.
+# Anlegen:      conda env create -f backend/environment.yml
+# Aktivieren:   conda activate fotobuch
+name: fotobuch
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
