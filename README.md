@@ -1,10 +1,8 @@
-# 📸 picture_classification – KI-Fotobuch aus Urlaubsbildern
+# Bildklassifikation
 
-Lokale Web-App, die Urlaubsfotos mit einem **lokalen Vision-Modell (Ollama)** kategorisiert,
+Lokale Web-App, die Fotos mit einem **lokalen Vision-Modell (Ollama)** kategorisiert,
 **gute von schlechten Bildern** trennt, Bildunterschriften vorschlägt und daraus ein
 **druckfertiges Fotobuch-PDF** erzeugt – damit ich das Aussortieren nicht selbst machen muss.
-
-> 🔒 Alles läuft lokal. Keine Fotos verlassen den Rechner.
 
 ---
 
