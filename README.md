@@ -5,8 +5,6 @@ Lokale Web-App, die Urlaubsfotos mit einem **lokalen Vision-Modell (Ollama)** be
 Bilder chronologisch als **Fotobuch** zusammenstellt – mit kurzen Kapitelüberschriften,
 manuellem Editor und druckfertigem PDF.
 
-> 🔒 Alles läuft lokal. Keine Fotos verlassen den Rechner (auch keine externen Fonts/CDNs im Frontend).
-
 ---
 
 ## Inhalt
