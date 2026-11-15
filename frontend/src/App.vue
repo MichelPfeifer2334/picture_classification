@@ -1,252 +1,214 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from './api'
-import ImageCard from './components/ImageCard.vue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import AnalysisPanel from './components/AnalysisPanel.vue'
+import AppHeader from './components/AppHeader.vue'
+import BookEditor from './components/BookEditor.vue'
+import BookPreview from './components/BookPreview.vue'
+import Lightbox from './components/Lightbox.vue'
+import PhotoCard from './components/PhotoCard.vue'
+import SelectionBar from './components/SelectionBar.vue'
+import ToastStack from './components/ToastStack.vue'
 import UploadZone from './components/UploadZone.vue'
-import type { Album, Health, ImageRecord } from './types'
+import { useAlbum } from './useAlbum'
 
-const UPLOAD_BATCH = 8 // Bilder pro Upload-Request
-const POLL_MS = 1500
-const STORAGE_KEY = 'fotobuch.albumId'
+const {
+  album,
+  images,
+  running,
+  classified,
+  visibleGroups,
+  visibleImages,
+  editorOpen,
+  init,
+  stopPolling,
+  toggleIncluded,
+} = useAlbum()
 
-const health = ref<Health | null>(null)
-const categories = ref<string[]>([])
-const album = ref<Album | null>(null)
-const uploading = ref<{ done: number; total: number } | null>(null)
-const uploadErrors = ref<string[]>([])
-const error = ref<string | null>(null)
-const excludeBad = ref(false)
-let pollTimer: number | undefined
+const openId = ref<string | null>(null)
 
-const running = computed(() => album.value?.job.status === 'running')
-const busy = computed(() => running.value || uploading.value !== null)
-const pending = computed(
-  () => album.value?.images.filter((i) => i.status !== 'classified').length ?? 0,
-)
-
-// Bilder nach Kategorie gruppieren – Reihenfolge wie im Backend konfiguriert
-const groups = computed(() => {
-  const map = new Map<string, ImageRecord[]>()
-  for (const img of album.value?.images ?? []) {
-    const key = img.classification?.category ?? 'unklassifiziert'
-    map.set(key, [...(map.get(key) ?? []), img])
-  }
-  const order = [...categories.value, 'unklassifiziert']
-  return [...map.entries()].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
-})
-
-function remember(id: string | null) {
-  try {
-    if (id) localStorage.setItem(STORAGE_KEY, id)
-    else localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    /* localStorage evtl. gesperrt – nicht schlimm */
-  }
-}
-
-async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
-  error.value = null
-  try {
-    return await fn()
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
-  }
-}
-
-async function newAlbum() {
-  stopPolling()
-  uploadErrors.value = []
-  const created = await run(api.createAlbum)
-  if (created) {
-    album.value = created
-    remember(created.id)
-  }
-}
-
-async function onFiles(files: File[]) {
-  if (!album.value) await newAlbum()
-  const id = album.value?.id
-  if (!id) return
-
-  uploadErrors.value = []
-  uploading.value = { done: 0, total: files.length }
-  try {
-    for (let i = 0; i < files.length; i += UPLOAD_BATCH) {
-      const batch = files.slice(i, i + UPLOAD_BATCH)
-      const result = await run(() => api.uploadImages(id, batch))
-      if (!result) break
-      uploadErrors.value.push(...result.errors.map((e) => `${e.filename}: ${e.error}`))
-      if (uploading.value) uploading.value.done += batch.length
-    }
-  } finally {
-    uploading.value = null
-    await refresh()
-  }
-}
-
-async function classify() {
-  if (!album.value) return
-  const job = await run(() => api.startClassification(album.value!.id))
-  if (job) {
-    album.value.job = job
-    startPolling()
-  }
-}
-
-async function refresh() {
-  if (!album.value) return
-  const fresh = await run(() => api.getAlbum(album.value!.id))
-  if (fresh) album.value = fresh
-  if (!running.value) stopPolling()
-}
-
-function startPolling() {
-  stopPolling()
-  pollTimer = window.setInterval(refresh, POLL_MS)
-}
-
-function stopPolling() {
-  if (pollTimer !== undefined) window.clearInterval(pollTimer)
-  pollTimer = undefined
-}
-
-onMounted(async () => {
-  health.value = (await run(api.health)) ?? null
-  categories.value = (await run(api.config))?.categories ?? []
-
-  // Letztes Album nach Neuladen der Seite wieder öffnen
-  let saved: string | null = null
-  try {
-    saved = localStorage.getItem(STORAGE_KEY)
-  } catch {
-    /* ignorieren */
-  }
-  if (saved) {
-    try {
-      album.value = await api.getAlbum(saved)
-      if (running.value) startPolling()
-    } catch {
-      remember(null)
-    }
-  }
-})
-
+onMounted(init)
 onUnmounted(stopPolling)
 </script>
 
 <template>
-  <main>
-    <header>
-      <h1>Fotobuch</h1>
-      <p v-if="health" class="status">
-        Modell <code>{{ health.ollama.model }}</code>:
-        <span v-if="health.ollama.model_available" class="ok">bereit</span>
-        <span v-else-if="health.ollama.reachable" class="warn">
-          nicht installiert (ollama pull {{ health.ollama.model }})
-        </span>
-        <span v-else class="warn">Ollama nicht erreichbar (ollama serve)</span>
-      </p>
-    </header>
+  <div class="app">
+    <AppHeader />
 
-    <p v-if="error" class="error-box">{{ error }}</p>
-
-    <!-- 1. Upload -->
-    <section>
-      <h2>1. Bilder hochladen</h2>
-      <UploadZone :disabled="busy" @files="onFiles" />
-      <p v-if="uploading">Lade hoch … {{ uploading.done }} / {{ uploading.total }}</p>
-      <details v-if="uploadErrors.length" class="error-box">
-        <summary>{{ uploadErrors.length }} Datei(en) übersprungen</summary>
-        <ul>
-          <li v-for="e in uploadErrors" :key="e">{{ e }}</li>
-        </ul>
-      </details>
-    </section>
-
-    <template v-if="album && album.images.length">
-      <!-- 2. Klassifizieren -->
-      <section>
-        <h2>2. Klassifizieren</h2>
-        <div class="row">
-          <button :disabled="busy || pending === 0" @click="classify">
-            {{ pending }} Bild(er) klassifizieren
-          </button>
-          <span v-if="running">
-            <progress :value="album.job.done" :max="album.job.total" />
-            {{ album.job.done }} / {{ album.job.total }}
-          </span>
-          <span v-else-if="pending === 0" class="ok">Alle {{ album.images.length }} Bilder klassifiziert</span>
-        </div>
+    <main>
+      <!-- Leerer Zustand: großer Hero -->
+      <section v-if="!images.length" class="hero">
+        <h2>Aus <span class="gradient-text">Hunderten Urlaubsfotos</span><br />wird ein fertiges Fotobuch.</h2>
+        <p>
+          Ein lokales KI-Modell bewertet jedes Bild, erkennt Duplikate und Serien und stellt die besten
+          Aufnahmen zu Fotobuch-Seiten zusammen. Nichts verlässt deinen Rechner.
+        </p>
+        <UploadZone :compact="false" />
+        <ol class="steps">
+          <li><b>1</b> Bilder hochladen</li>
+          <li><b>2</b> KI-Analyse</li>
+          <li><b>3</b> Auswahl prüfen</li>
+          <li><b>4</b> PDF exportieren</li>
+        </ol>
       </section>
 
-      <!-- 3. Export -->
-      <section>
-        <h2>3. PDF exportieren</h2>
-        <div class="row">
-          <label><input v-model="excludeBad" type="checkbox" /> schlechte Bilder weglassen</label>
-          <a
-            class="button"
-            :class="{ disabled: busy }"
-            :href="busy ? undefined : api.pdfUrl(album.id, excludeBad)"
-            download="fotobuch.pdf"
-          >
-            PDF herunterladen
-          </a>
-          <button class="secondary" :disabled="busy" @click="newAlbum">Neues Album</button>
-        </div>
-      </section>
+      <template v-else-if="album">
+        <UploadZone :compact="true" />
+        <AnalysisPanel />
+        <BookPreview v-if="classified && !running" />
+        <SelectionBar v-if="classified" />
 
-      <!-- Galerie -->
-      <section v-for="[category, images] in groups" :key="category">
-        <h3>{{ category }} <small>({{ images.length }})</small></h3>
-        <div class="grid">
-          <ImageCard v-for="img in images" :key="img.id" :album-id="album.id" :image="img" />
-        </div>
-      </section>
-    </template>
-  </main>
+        <section v-for="group in visibleGroups" :key="group.key" class="group">
+          <h3>
+            <span v-if="group.icon" class="icon">{{ group.icon }}</span>
+            <span class="titles">
+              <small v-if="group.subtitle">{{ group.subtitle }}</small>
+              {{ group.title }}
+            </span>
+            <span class="count">
+              {{ group.images.filter((i) => i.included).length }} / {{ group.images.length }} im Buch
+            </span>
+          </h3>
+          <TransitionGroup tag="div" name="grid" class="grid">
+            <PhotoCard
+              v-for="img in group.images"
+              :key="img.id"
+              :album-id="album.id"
+              :image="img"
+              :analyzing="running"
+              @open="openId = img.id"
+              @toggle="toggleIncluded(img)"
+            />
+          </TransitionGroup>
+        </section>
+
+        <p v-if="!visibleGroups.length" class="empty">Keine Bilder für diesen Filter.</p>
+      </template>
+    </main>
+
+    <Lightbox
+      v-if="openId"
+      :image-id="openId"
+      :list="visibleImages"
+      @close="openId = null"
+      @navigate="openId = $event"
+    />
+    <BookEditor v-if="editorOpen" />
+    <ToastStack />
+  </div>
 </template>
 
 <style scoped>
-main {
-  max-width: 1200px;
+.app {
+  max-width: 1440px;
   margin: 0 auto;
-  padding: 1rem 1rem 3rem;
+  padding: 0 clamp(1rem, 3vw, 2.5rem) 5rem;
 }
-header {
+main {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1.5rem;
+  padding-top: clamp(1rem, 6vh, 4rem);
+}
+.hero h2 {
+  font-size: clamp(2rem, 5vw, 3.6rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+}
+.hero > p {
+  max-width: 620px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+.hero :deep(.drop) {
+  width: min(760px, 100%);
+}
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  justify-content: center;
+  gap: 0.5rem 1.75rem;
+  color: var(--muted);
+  font-size: 0.88rem;
 }
-section {
-  margin-top: 1.5rem;
+.steps b {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.75rem;
 }
-h3 {
-  text-transform: capitalize;
-}
-.row {
+.group h3 {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1rem 0 1rem;
+  font-size: 1.25rem;
+}
+.group .icon {
+  font-size: 1.3rem;
+}
+.group .titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.group .titles small {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.group .count {
+  margin-left: auto;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--muted);
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
 }
-.ok {
-  color: #15803d;
+.grid-move,
+.grid-enter-active,
+.grid-leave-active {
+  transition: all 0.45s var(--ease);
 }
-.warn {
-  color: #b45309;
+.grid-enter-from,
+.grid-leave-to {
+  opacity: 0;
+  transform: scale(0.94);
 }
-.error-box {
-  background: #fef2f2;
-  color: #991b1b;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
+.grid-leave-active {
+  position: absolute;
+}
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 3rem 0;
+}
+@media (max-width: 480px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
 }
 </style>

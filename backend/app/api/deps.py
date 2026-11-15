@@ -22,4 +22,4 @@ def get_runner() -> ClassificationRunner:
         categories=s.categories,
         timeout_s=s.ollama_timeout_s,
     )
-    return ClassificationRunner(get_store(), classifier)
+    return ClassificationRunner(get_store(), classifier, s)

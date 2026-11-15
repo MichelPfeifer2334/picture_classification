@@ -1,0 +1,78 @@
+// Deutsche Anzeigenamen für Schlüssel aus dem Backend
+
+export const FLAG_LABELS: Record<string, string> = {
+  blurry: 'Unscharf',
+  motion_blur: 'Verwackelt',
+  overexposed: 'Überbelichtet',
+  underexposed: 'Zu dunkel',
+  eyes_closed: 'Augen zu',
+  face_cut_off: 'Gesicht angeschnitten',
+  unflattering: 'Unvorteilhaft',
+  subject_too_small: 'Motiv zu klein',
+  obstructed: 'Verdeckt',
+  tilted_horizon: 'Schief',
+  cluttered: 'Unruhig',
+  boring: 'Belanglos',
+  screenshot_or_document: 'Dokument',
+  accidental: 'Versehen',
+}
+
+export const STRENGTH_LABELS: Record<string, string> = {
+  smiling: 'Lächeln',
+  natural_expression: 'Natürlich',
+  great_light: 'Tolles Licht',
+  golden_hour: 'Goldene Stunde',
+  strong_composition: 'Starke Komposition',
+  iconic_place: 'Wahrzeichen',
+  emotional_moment: 'Besonderer Moment',
+  vivid_colors: 'Kräftige Farben',
+}
+
+export const GROUP_LABELS = {
+  duplicate: 'Duplikat',
+  burst: 'Serienbild',
+  similar: 'Ähnliches Motiv',
+} as const
+
+export const QUALITY_LABELS = { good: 'Top', ok: 'Okay', bad: 'Schwach' } as const
+
+export const TEMPLATE_LABELS: Record<string, string> = {
+  single: 'Einzelbild',
+  full_bleed: 'Randlos',
+  two_portrait: '2 Hochformate',
+  two_landscape: '2 Querformate',
+  mixed: 'Quer + Hoch',
+  three: '1 groß + 2',
+  four: 'Raster 2 × 2',
+}
+
+export const TEMPLATES_BY_COUNT: Record<number, string[]> = {
+  1: ['single', 'full_bleed'],
+  2: ['two_portrait', 'two_landscape', 'mixed'],
+  3: ['three'],
+  4: ['four'],
+}
+
+export const CATEGORY_ICONS: Record<string, string> = {
+  strand: '🏖️',
+  landschaft: '⛰️',
+  stadt: '🏛️',
+  essen: '🍝',
+  personen: '🧑‍🤝‍🧑',
+  tiere: '🐾',
+  sonstiges: '✨',
+  unklassifiziert: '⏳',
+}
+
+export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+const DATE_FMT = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'long' })
+const TIME_FMT = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' })
+
+export function formatDay(iso: string | null): string {
+  return iso ? DATE_FMT.format(new Date(iso)) : 'Ohne Datum'
+}
+
+export function formatTime(iso: string | null): string {
+  return iso ? TIME_FMT.format(new Date(iso)) : ''
+}

@@ -1,74 +1,89 @@
-"""Schlichter PDF-Export (MVP): A4 hoch, ein Bild pro Seite, darunter Kategorie + Bildunterschrift.
+"""Fotobuch-PDF: rendert das Layout aus services/layout.py.
 
-Bilder sind nach Kategorie (Reihenfolge wie in der Konfiguration) und dann Dateiname sortiert.
+- Seitengröße = Endformat + Beschnittzugabe ringsum (für den Druck)
+- Jedes Bild wird auf das Seitenverhältnis seiner Zelle zugeschnitten – um den vom Modell
+  gemeldeten Bildschwerpunkt (z. B. Gesichter) herum – und auf print_dpi heruntergerechnet
+- Text nur als kurze Kapitelüberschrift (+ Datum) auf der ersten Seite eines Kapitels
 """
 
+from io import BytesIO
 from pathlib import Path
 
-from reportlab.lib.pagesizes import A4
+from PIL import Image, ImageOps
+from reportlab.lib.colors import Color
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from app.models.album import Album, ImageRecord, ImageStatus
+from app.core.config import Settings
+from app.models.album import Album
+from app.services.layout import BookLayout, Cell, Page, build_layout
 from app.services.storage import AlbumStore
 
-MARGIN = 15 * mm
-TEXT_AREA = 18 * mm
-UNCLASSIFIED = "unklassifiziert"
+TITLE_FONT = "Helvetica-Bold"
+SUBTITLE_FONT = "Helvetica"
+DARK = Color(0.16, 0.15, 0.17)
+GREY = Color(0.52, 0.5, 0.55)
 
 
-def select_images(album: Album, categories: list[str], exclude_bad: bool) -> list[ImageRecord]:
-    def category_of(img: ImageRecord) -> str:
-        return img.classification.category if img.classification else UNCLASSIFIED
+def _render_cell(path: Path, cell: Cell, dpi: int) -> ImageReader:
+    target = (max(1, round(cell.w / 25.4 * dpi)), max(1, round(cell.h / 25.4 * dpi)))
+    with Image.open(path) as img:
+        fitted = ImageOps.fit(
+            img.convert("RGB"),
+            target,
+            Image.Resampling.LANCZOS,
+            centering=(cell.focus_x, cell.focus_y),
+        )
+    buf = BytesIO()
+    fitted.save(buf, "JPEG", quality=90)
+    buf.seek(0)
+    return ImageReader(buf)
 
-    order = {cat: i for i, cat in enumerate(categories)}
-    images = [
-        img
-        for img in album.images
-        if not (exclude_bad and img.classification and img.classification.quality == "bad")
-    ]
-    return sorted(images, key=lambda img: (order.get(category_of(img), len(order)), img.filename))
+
+def _draw_title(pdf: canvas.Canvas, page: Page, layout: BookLayout, page_h: float) -> None:
+    if not page.title:
+        return
+    b = layout.bleed_mm
+    x = (layout.margin_mm + b) * mm
+    top = page_h - (layout.margin_mm + b)  # mm, von unten gemessen
+    on_photo = page.template == "full_bleed"
+    pdf.setFillColor(Color(1, 1, 1) if on_photo else DARK)
+    pdf.setFont(TITLE_FONT, 17)
+    pdf.drawString(x, (top - 7) * mm, page.title)
+    if page.subtitle:
+        pdf.setFillColor(Color(1, 1, 1, alpha=0.85) if on_photo else GREY)
+        pdf.setFont(SUBTITLE_FONT, 8.5)
+        pdf.drawString(x, (top - 12) * mm, page.subtitle.upper())
 
 
-def build_pdf(
-    album: Album, store: AlbumStore, categories: list[str], exclude_bad: bool, out: Path
-) -> int:
-    """Schreibt das PDF nach `out` und gibt die Anzahl der Seiten zurück."""
-    images = select_images(album, categories, exclude_bad)
+def render_pdf(layout: BookLayout, album: Album, store: AlbumStore, s: Settings, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
+    b = layout.bleed_mm
+    page_w = layout.page_width_mm + 2 * b
+    page_h = layout.page_height_mm + 2 * b
 
-    page_w, page_h = A4
-    box_w = page_w - 2 * MARGIN
-    box_h = page_h - 2 * MARGIN - TEXT_AREA
-
-    pdf = canvas.Canvas(str(out), pagesize=A4)
+    pdf = canvas.Canvas(str(out), pagesize=(page_w * mm, page_h * mm))
     pdf.setTitle("Fotobuch")
 
-    if not images:
-        pdf.setFont("Helvetica", 14)
-        pdf.drawCentredString(page_w / 2, page_h / 2, "Keine Bilder ausgewählt.")
-        pdf.showPage()
-        pdf.save()
-        return 1
+    if not layout.pages:
+        pdf.showPage()  # leere Seite statt kaputter Datei
 
-    for img in images:
-        path = store.image_paths(album.id, img.id).full
-        reader = ImageReader(str(path))
-        iw, ih = reader.getSize()
-        scale = min(box_w / iw, box_h / ih)
-        w, h = iw * scale, ih * scale
-        x = (page_w - w) / 2
-        y = MARGIN + TEXT_AREA + (box_h - h) / 2
-        pdf.drawImage(reader, x, y, width=w, height=h)
-
-        if img.status == ImageStatus.CLASSIFIED and img.classification:
-            label = f"{img.classification.category.capitalize()} · {img.classification.caption}"
-        else:
-            label = f"{UNCLASSIFIED.capitalize()} · {img.filename}"
-        pdf.setFont("Helvetica", 11)
-        pdf.drawCentredString(page_w / 2, MARGIN + TEXT_AREA / 2, label)
+    for page in layout.pages:
+        for cell in page.cells:
+            path = store.image_paths(album.id, cell.image_id).full
+            reader = _render_cell(path, cell, s.print_dpi)
+            # Layout-Koordinaten: oben links, ohne Beschnitt → PDF: unten links, mit Beschnitt
+            x = (cell.x + b) * mm
+            y = (page_h - (cell.y + b) - cell.h) * mm
+            pdf.drawImage(reader, x, y, width=cell.w * mm, height=cell.h * mm)
+        _draw_title(pdf, page, layout, page_h)
         pdf.showPage()
 
     pdf.save()
-    return len(images)
+    return max(1, len(layout.pages))
+
+
+def build_pdf(album: Album, store: AlbumStore, s: Settings, out: Path) -> int:
+    """Layout berechnen und PDF schreiben. Gibt die Seitenzahl zurück."""
+    return render_pdf(build_layout(album, s), album, store, s, out)

@@ -1,34 +1,245 @@
+/* ---------------------------------------------------------------------------
+   Design-Tokens – dunkles "Golden Hour"-Thema
+   Bewusst nur System-Schriften: keine externen Fonts/CDNs → App bleibt 100 % lokal.
+--------------------------------------------------------------------------- */
 :root {
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  color: #111827;
-  background: #f9fafb;
+  --bg: #08080f;
+  --bg-2: #0e0e19;
+  --surface: rgba(255, 255, 255, 0.045);
+  --surface-2: rgba(255, 255, 255, 0.08);
+  --surface-solid: #14141f;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --text: #f1eff8;
+  --muted: #a3a1b8;
+  --faint: #6c6a82;
+
+  --sunset-1: #ffb15c;
+  --sunset-2: #ff5f6d;
+  --sunset-3: #c04cff;
+  --accent: #ff7a59;
+  --gradient: linear-gradient(120deg, var(--sunset-1), var(--sunset-2) 45%, var(--sunset-3));
+
+  --good: #4ade80;
+  --ok: #facc15;
+  --bad: #fb7185;
+
+  --radius: 18px;
+  --radius-sm: 12px;
+  --shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.7);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  font-family:
+    'Inter', 'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system,
+    Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  overflow-x: hidden;
 }
 
-button,
-a.button {
+/* Animierter Farbverlauf im Hintergrund */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -20vmax;
+  z-index: -1;
+  background:
+    radial-gradient(40vmax 40vmax at 15% 10%, rgba(255, 140, 80, 0.16), transparent 60%),
+    radial-gradient(35vmax 35vmax at 85% 15%, rgba(192, 76, 255, 0.14), transparent 60%),
+    radial-gradient(45vmax 45vmax at 50% 110%, rgba(255, 80, 120, 0.12), transparent 60%);
+  animation: drift 30s ease-in-out infinite alternate;
+}
+
+@keyframes drift {
+  to {
+    transform: translate3d(3vmax, -2vmax, 0) rotate(8deg);
+  }
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.gradient-text {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: var(--shadow);
+}
+
+/* --- Buttons --------------------------------------------------------------- */
+.btn {
+  --btn-bg: var(--surface-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   font: inherit;
-  padding: 0.45rem 0.9rem;
-  border: 1px solid #2563eb;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
+  font-weight: 600;
+  font-size: 0.92rem;
+  padding: 0.65rem 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--btn-bg);
+  color: var(--text);
   cursor: pointer;
   text-decoration: none;
+  white-space: nowrap;
+  transition:
+    transform 0.2s var(--ease),
+    background 0.2s,
+    border-color 0.2s,
+    box-shadow 0.3s;
 }
 
-button.secondary {
-  background: #fff;
-  color: #2563eb;
+.btn:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
 }
 
-button:disabled,
-a.button.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.btn-primary {
+  border: none;
+  background: var(--gradient);
+  color: #1a0b12;
+  box-shadow: 0 10px 30px -10px rgba(255, 95, 109, 0.7);
+}
+
+.btn-primary:hover {
+  box-shadow: 0 14px 40px -10px rgba(255, 95, 109, 0.9);
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-lg {
+  padding: 0.9rem 1.6rem;
+  font-size: 1rem;
+}
+
+.btn:disabled,
+.btn.disabled {
+  opacity: 0.4;
   pointer-events: none;
 }
-</style>
+
+/* --- Chips ----------------------------------------------------------------- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.chip.active {
+  color: #1a0b12;
+  background: var(--text);
+  border-color: var(--text);
+}
+
+.chip .count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+/* --- Range-Slider ---------------------------------------------------------- */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--sunset-1) 0%,
+    var(--sunset-2) var(--fill, 50%),
+    var(--surface-2) var(--fill, 50%)
+  );
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(255, 95, 109, 0.35);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(255, 95, 109, 0.35);
+}
+
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -31,4 +31,8 @@ Qualität bewerten → Review → Fotobuch-PDF. Details: `README.md`, `docs/`.
 
 - Backend: Router in `app/api/`, Logik in `app/services/`, Modelle in `app/models/`.
 - Classifier immer über das Interface in `app/services/classifier/`.
-- Prüfen: `pytest`, `ruff check .`, `mypy app` (Backend) · `npm run lint`, `npm run test:unit` (Frontend).
+- Auswahl-Logik in `app/services/selection.py` (nach Änderungen immer `curate()` aufrufen),
+  Kapitel in `app/services/chapters.py`, Fotobuch-Layout in `app/services/layout.py`.
+- Fotobuch-PDF: Bilder im Vordergrund; Text nur als kurze Kapitelüberschrift + Datum.
+- Frontend ohne externe Fonts/CDNs (Privatsphäre: alles lokal); Zustand in `src/useAlbum.ts`.
+- Prüfen: `pytest`, `ruff check .`, `mypy app` (Backend) · `npm run type-check` (Frontend).

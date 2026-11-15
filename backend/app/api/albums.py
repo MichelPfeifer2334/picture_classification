@@ -7,10 +7,22 @@ from fastapi.responses import FileResponse
 
 from app.api.deps import get_runner, get_store
 from app.core.config import Settings, get_settings
-from app.models.album import Album, ImageRecord, JobState, UploadError, UploadResult
+from app.models.album import (
+    Album,
+    AlbumUpdate,
+    BookUpdate,
+    ChapterUpdate,
+    ImageRecord,
+    ImageUpdate,
+    JobState,
+    UploadError,
+    UploadResult,
+)
 from app.services.image_processing import ALLOWED_SUFFIXES, InvalidImageError, process_upload
 from app.services.jobs import ClassificationRunner
+from app.services.layout import BookLayout, build_layout
 from app.services.pdf.export import build_pdf
+from app.services.selection import curate
 from app.services.storage import AlbumNotFoundError, AlbumStore
 
 router = APIRouter(prefix="/albums", tags=["albums"])
@@ -27,14 +39,46 @@ def _load(store: AlbumStore, album_id: str) -> Album:
         raise HTTPException(404, "Album nicht gefunden") from exc
 
 
+def _image_file(store: AlbumStore, album_id: str, image_id: str, kind: str) -> Path:
+    try:
+        paths = store.image_paths(album_id, image_id)
+    except AlbumNotFoundError as exc:
+        raise HTTPException(404, "Bild nicht gefunden") from exc
+    path: Path = getattr(paths, kind)
+    if not path.exists():
+        raise HTTPException(404, "Bild nicht gefunden")
+    return path
+
+
+# --- Album ----------------------------------------------------------------------
+
+
 @router.post("", response_model=Album, status_code=201)
-def create_album(store: StoreDep) -> Album:
-    return store.create()
+def create_album(store: StoreDep, settings: SettingsDep) -> Album:
+    album = store.create()
+    album.min_score = settings.default_min_score
+    store.save(album)
+    return album
 
 
 @router.get("/{album_id}", response_model=Album)
 def get_album(album_id: str, store: StoreDep) -> Album:
     return _load(store, album_id)
+
+
+@router.patch("/{album_id}", response_model=Album)
+async def update_album(
+    album_id: str, update: AlbumUpdate, store: StoreDep, settings: SettingsDep
+) -> Album:
+    _load(store, album_id)
+    async with store.locked(album_id) as album:
+        if update.min_score is not None:
+            album.min_score = update.min_score
+        curate(album, settings)
+    return album
+
+
+# --- Bilder ---------------------------------------------------------------------
 
 
 @router.post("/{album_id}/images", response_model=UploadResult)
@@ -47,7 +91,7 @@ async def upload_images(
 ) -> UploadResult:
     _load(store, album_id)
     if runner.is_running(album_id):
-        raise HTTPException(409, "Klassifizierung läuft gerade – bitte warten")
+        raise HTTPException(409, "Analyse läuft gerade – bitte warten")
 
     added: list[ImageRecord] = []
     errors: list[UploadError] = []
@@ -62,50 +106,150 @@ async def upload_images(
         paths = store.image_paths(album_id, image_id)
         data = await upload.read()
         try:
-            width, height = await asyncio.to_thread(
+            width, height, metrics = await asyncio.to_thread(
                 process_upload, data, paths, settings.model_input_max_px, settings.thumb_max_px
             )
         except InvalidImageError as exc:
             errors.append(UploadError(filename=name, error=str(exc)))
             continue
-        added.append(ImageRecord(id=image_id, filename=name, width=width, height=height))
+        added.append(
+            ImageRecord(id=image_id, filename=name, width=width, height=height, metrics=metrics)
+        )
 
     async with store.locked(album_id) as album:
         album.images.extend(added)
         if album.job.status == "done":
-            album.job.status = "idle"  # neue Bilder → erneut klassifizierbar
+            album.job.status = "idle"  # neue Bilder → erneut analysierbar
+        curate(album, settings)
+        added = [img for img in album.images if img.id in {a.id for a in added}]
 
     return UploadResult(added=added, errors=errors)
 
 
+@router.patch("/{album_id}/images/{image_id}", response_model=Album)
+async def update_image(
+    album_id: str,
+    image_id: str,
+    update: ImageUpdate,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> Album:
+    """Manuelle Korrektur: aufnehmen/aussortieren (null = Automatik) und Kategorie ändern."""
+    _load(store, album_id)
+    if update.category is not None and update.category not in settings.categories:
+        raise HTTPException(422, f"Unbekannte Kategorie: {update.category}")
+
+    async with store.locked(album_id) as album:
+        img = album.find_image(image_id)
+        if img is None:
+            raise HTTPException(404, "Bild nicht gefunden")
+        if "included" in update.model_fields_set:
+            img.user_included = update.included
+        if update.category is not None and img.classification is not None:
+            img.classification.category = update.category
+        curate(album, settings)
+    return album
+
+
 @router.get("/{album_id}/images/{image_id}/thumb")
 def get_thumbnail(album_id: str, image_id: str, store: StoreDep) -> FileResponse:
-    try:
-        path = store.image_paths(album_id, image_id).thumb
-    except AlbumNotFoundError as exc:
-        raise HTTPException(404, "Bild nicht gefunden") from exc
-    if not path.exists():
-        raise HTTPException(404, "Bild nicht gefunden")
-    return FileResponse(path, media_type="image/webp")
+    return FileResponse(_image_file(store, album_id, image_id, "thumb"), media_type="image/webp")
+
+
+@router.get("/{album_id}/images/{image_id}/preview")
+def get_preview(album_id: str, image_id: str, store: StoreDep) -> FileResponse:
+    """Größere Vorschau (1024 px) für die Lightbox."""
+    path = _image_file(store, album_id, image_id, "model_input")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+# --- Analyse ----------------------------------------------------------------------
 
 
 @router.post("/{album_id}/classify", response_model=JobState)
-async def start_classification(album_id: str, store: StoreDep, runner: RunnerDep) -> JobState:
+async def start_classification(
+    album_id: str, store: StoreDep, runner: RunnerDep, force: bool = False
+) -> JobState:
+    """Startet die Analyse. force=true analysiert auch schon bewertete Bilder neu."""
     _load(store, album_id)
-    return await runner.start(album_id)
+    return await runner.start(album_id, force=force)
+
+
+# --- Fotobuch ---------------------------------------------------------------------
+
+
+@router.get("/{album_id}/layout", response_model=BookLayout)
+def get_layout(album_id: str, store: StoreDep, settings: SettingsDep) -> BookLayout:
+    """Seitenaufteilung des Fotobuchs (für Vorschau und Editor)."""
+    return build_layout(_load(store, album_id), settings)
+
+
+@router.put("/{album_id}/book", response_model=BookLayout)
+async def save_book(
+    album_id: str, update: BookUpdate, store: StoreDep, runner: RunnerDep, settings: SettingsDep
+) -> BookLayout:
+    """Manuelles Layout aus dem Editor speichern (schaltet in den manuellen Modus)."""
+    _load(store, album_id)
+    if runner.is_running(album_id):
+        raise HTTPException(409, "Analyse läuft noch")
+    async with store.locked(album_id) as album:
+        known = {img.id for img in album.images}
+        seen: set[str] = set()
+        for page in update.pages:
+            if len(page.image_ids) > 4:
+                raise HTTPException(422, "Höchstens 4 Bilder pro Seite")
+            for image_id in page.image_ids:
+                if image_id not in known or image_id in seen:
+                    raise HTTPException(422, f"Ungültiges oder doppeltes Bild: {image_id}")
+                seen.add(image_id)
+        # Wer ein Bild auf eine Seite legt, will es im Buch haben
+        for image_id in [*update.include, *seen]:
+            img = album.find_image(image_id)
+            if img is not None and not img.included:
+                img.user_included = True
+        for image_id in update.exclude:
+            if img := album.find_image(image_id):
+                img.user_included = False
+        album.book = [p for p in update.pages if p.image_ids]
+        curate(album, settings)
+    return build_layout(album, settings)
+
+
+@router.delete("/{album_id}/book", response_model=BookLayout)
+async def reset_book(album_id: str, store: StoreDep, settings: SettingsDep) -> BookLayout:
+    """Manuelle Änderungen verwerfen → wieder automatisches Layout."""
+    _load(store, album_id)
+    async with store.locked(album_id) as album:
+        album.book = None
+    return build_layout(album, settings)
+
+
+@router.patch("/{album_id}/chapters/{chapter_id}", response_model=BookLayout)
+async def update_chapter(
+    album_id: str,
+    chapter_id: str,
+    update: ChapterUpdate,
+    store: StoreDep,
+    settings: SettingsDep,
+) -> BookLayout:
+    """Kapitelüberschrift ändern (leer = keine Überschrift)."""
+    _load(store, album_id)
+    async with store.locked(album_id) as album:
+        chapter = album.find_chapter(chapter_id)
+        if chapter is None:
+            raise HTTPException(404, "Kapitel nicht gefunden")
+        chapter.title = update.title.strip()
+        chapter.title_edited = True
+    return build_layout(album, settings)
 
 
 @router.get("/{album_id}/export.pdf")
 async def export_pdf(
-    album_id: str,
-    store: StoreDep,
-    runner: RunnerDep,
-    settings: SettingsDep,
-    exclude_bad: bool = False,
+    album_id: str, store: StoreDep, runner: RunnerDep, settings: SettingsDep
 ) -> FileResponse:
     album = _load(store, album_id)
     if runner.is_running(album_id):
-        raise HTTPException(409, "Klassifizierung läuft noch")
+        raise HTTPException(409, "Analyse läuft noch")
     out = store.export_path(album_id)
-    await asyncio.to_thread(build_pdf, album, store, settings.categories, exclude_bad, out)
+    await asyncio.to_thread(build_pdf, album, store, settings, out)
     return FileResponse(out, media_type="application/pdf", filename="fotobuch.pdf")
