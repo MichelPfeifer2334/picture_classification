@@ -75,6 +75,16 @@ Nenne Ort oder Aktivität so konkret wie möglich, z. B. "Shopping in den Galeri
 "Abendessen am Hafen", "Am Strand von Lagos", "Ausflug nach Sintra".
 Kein Datum, keine Anführungszeichen, kein Punkt am Ende. Antworte als JSON."""
 
+ALBUM_TITLE_PROMPT = """Du gestaltest den Umschlag eines Urlaubsfotobuchs. Hier sind die \
+Kapitelüberschriften und typische Motive der Reise:
+
+{lines}
+
+Wie heißt die Reise? Antworte mit dem Reiseziel in 1 bis 3 Wörtern, so wie man es auf einen
+Buchrücken schreibt – z. B. "Paris", "Toskana", "Kreta", "Rom & Florenz", "Norwegen".
+Nenne die Stadt oder Region, wenn sie erkennbar ist; sonst eine kurze Beschreibung wie
+"Sommer am Meer". Kein Datum, keine Anführungszeichen. Antworte als JSON."""
+
 TITLE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"title": {"type": "string"}},
@@ -133,3 +143,14 @@ class OllamaClassifier:
         )
         data = json.loads(response.message.content or "{}")
         return clean_title(str(data.get("title", "")))
+
+    async def album_title(self, descriptions: list[str]) -> str:
+        lines = "\n".join(f"- {d}" for d in descriptions[:25])
+        response = await self._client.chat(
+            model=self._model,
+            messages=[{"role": "user", "content": ALBUM_TITLE_PROMPT.format(lines=lines)}],
+            format=TITLE_SCHEMA,
+            options={"temperature": 0.2},
+        )
+        data = json.loads(response.message.content or "{}")
+        return clean_title(str(data.get("title", "")))[:30]

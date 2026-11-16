@@ -161,3 +161,74 @@ def test_cells_stay_inside_page() -> None:
             assert c.x >= S.margin_mm - 0.01 and c.y >= S.margin_mm - 0.01
             assert c.x + c.w <= S.page_width_mm - S.margin_mm + 0.01
             assert c.y + c.h <= S.page_height_mm - S.margin_mm + 0.01
+
+
+def test_all_templates_stay_inside_content_box() -> None:
+    from app.services.layout import TEMPLATES, content_box
+
+    for with_title in (False, True):
+        x0, y0, w, h = content_box(S, with_title)
+        for name, t in TEMPLATES.items():
+            if name in ("full_bleed", "single"):
+                continue
+            rects = t.cells((x0, y0, w, h), S)
+            assert len(rects) == t.slots, name
+            for x, y, cw, ch in rects:
+                assert cw > 20 and ch > 20, name
+                assert x >= x0 - 0.01 and y >= y0 - 0.01, name
+                assert x + cw <= x0 + w + 0.01 and y + ch <= y0 + h + 0.01, name
+
+
+def test_three_portraits_use_portrait_template() -> None:
+    imgs = [_img(f"p{n}", 3000, 4000, taken_at=T0 + timedelta(minutes=n)) for n in range(3)]
+    layout = build_layout(_album(imgs), S)
+    assert [p.template for p in layout.pages] == ["three_portrait"]
+
+
+def test_polaroid_style_adds_frame_and_rotation() -> None:
+    imgs = [_img(f"i{n}", 4000, 3000, taken_at=T0 + timedelta(minutes=n)) for n in range(4)]
+    album = _album(imgs)
+    album.style = "erinnerungen"
+    layout = build_layout(album, S)
+    cells = [c for p in layout.pages for c in p.cells]
+    assert layout.style == "erinnerungen"
+    assert all(c.pad_bottom > c.pad_side > 0 for c in cells)
+    assert any(c.rotate != 0 for c in cells)
+    assert all(abs(c.rotate) <= 1.6 for c in cells)
+
+    album.style = "schlicht"
+    plain = [c for p in build_layout(album, S).pages for c in p.cells]
+    assert all(c.pad_side == 0 and c.rotate == 0 for c in plain)
+
+
+def test_manual_book_chapters_split() -> None:
+    from app.models.album import Chapter
+
+    imgs = [_img(f"i{n}", 4000, 3000, taken_at=T0 + timedelta(minutes=n)) for n in range(4)]
+    album = _album(imgs)
+    album.book = [
+        BookPage(template="auto", chapter_id="c1", image_ids=["i0", "i1"]),
+        BookPage(template="auto", chapter_id="c2", image_ids=["i2", "i3"]),
+    ]
+    album.book_chapters = [Chapter(id="c1", title="Ankunft"), Chapter(id="c2", title="")]
+    layout = build_layout(album, S)
+    assert [p.title for p in layout.pages] == ["Ankunft", None]
+    assert [c.id for c in layout.chapters] == ["c1", "c2"]
+    assert layout.chapters[1].subtitle == "Samstag, 1. August 2026"
+
+
+def test_no_orphan_single_page_at_chapter_end() -> None:
+    """Vier Bilder (quer, hoch, quer, quer) → nicht "3 + einzelnes Restbild"."""
+    sizes = [(4000, 3000), (3000, 4000), (4000, 3000), (4000, 3000)]
+    imgs = [
+        _img(f"i{n}", w, h, taken_at=T0 + timedelta(minutes=n)) for n, (w, h) in enumerate(sizes)
+    ]
+    layout = build_layout(_album(imgs), S)
+    assert all(len(p.cells) > 1 for p in layout.pages)
+
+
+def test_orphan_allowed_when_rest_is_hero() -> None:
+    imgs = [_img(f"i{n}", 3000, 4000, taken_at=T0 + timedelta(minutes=n)) for n in range(2)]
+    imgs.append(_img("hero", 4000, 3000, score=9.0, taken_at=T0 + timedelta(minutes=5)))
+    layout = build_layout(_album(imgs), S)
+    assert [p.template for p in layout.pages] == ["two_portrait", "full_bleed"]

@@ -52,6 +52,7 @@ class ClassificationRunner:
             for n, image_id in enumerate(image_ids, start=1):
                 await self._analyze_one(album_id, image_id, n)
             await self._name_chapters(album_id, force)
+            await self._name_album(album_id, force)
         finally:
             async with self._store.locked(album_id) as album:
                 album.job.status = "done"
@@ -116,3 +117,30 @@ class ClassificationRunner:
                 target = album.find_chapter(chapter_id)
                 if target is not None and not target.title_edited:
                     target.title = title
+
+    async def _name_album(self, album_id: str, force: bool) -> None:
+        """Albumtitel-Vorschlag ("Paris") aus Kapitelüberschriften und Motiven."""
+        album = self._store.get(album_id)
+        if album.suggested_title and not force:
+            return
+        chapter_titles = [f"Kapitel: {c.title}" for c in album.chapters if c.title]
+        best = sorted(
+            (i for i in album.images if i.included and i.classification),
+            key=lambda i: -(i.rank or 0),
+        )[:12]
+        motifs = [
+            f"Motiv: {i.classification.subject} – {i.classification.caption}"
+            for i in best
+            if i.classification
+        ]
+        descriptions = chapter_titles + motifs
+        if not descriptions:
+            return
+        try:
+            title = await self._classifier.album_title(descriptions)
+        except Exception:
+            log.exception("Albumtitel fehlgeschlagen: %s", album_id)
+            return
+        if title:
+            async with self._store.locked(album_id) as locked:
+                locked.suggested_title = title

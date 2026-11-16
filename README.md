@@ -35,12 +35,16 @@ manuellem Editor und druckfertigem PDF.
 | Regler „Strenge“ (Mindest-Score) und manuelles Aufnehmen/Aussortieren | ✅ |
 | Mini-Kapitel entlang der Reise (EXIF-Zeit) mit kurzen KI-Überschriften | ✅ |
 | Galerie als Urlaubsverlauf oder nach Kategorien | ✅ |
-| Fotobuch-Layout: 1–4 Bilder/Seite, randlose Highlights, Zuschnitt um Gesichter/Motiv | ✅ |
-| **Editor:** Bilder tauschen/verschieben/entfernen, Vorlagen, Seiten ordnen, Überschriften ändern | ✅ |
+| Fotobuch-Layout: 13 Vorlagen mit 1–4 Bildern je nach Bildformaten, randlose Highlights, Zuschnitt um Gesichter/Motiv, keine einsamen Restbilder | ✅ |
+| **Gestaltungsstile:** Schlicht, Elegant, Erinnerungen (Polaroid), Magazin | ✅ |
+| **Editor:** Bilder tauschen/verschieben/entfernen, Vorlagen, Seiten ordnen, Kapitel teilen/verbinden, Überschriften | ✅ |
+| Großansicht im Editor mit Gruppen-Alternativen (anderes Bild der Serie nehmen oder zusätzlich aufnehmen) | ✅ |
 | Seitenvorschau im Browser = PDF | ✅ |
-| Druck-PDF (Beschnittzugabe, 300 dpi), Text nur als Kapitelüberschrift | ✅ |
+| **Druckfertig für Saal Digital 28 × 28 Hardcover:** Innenteil als Doppelseiten (Vorsatz weiß, auf 26–40 Seiten aufgefüllt) + Umschlag als eine Datei | ✅ |
+| **Umschlag-Generator:** Titelbild, Titel („Paris“ vom Modell vorgeschlagen), Zeitraum, Buchrücken „PARIS · 2026“, Rückseite – im Stil des Buchs, alles änderbar | ✅ |
+| **Preflight:** Seitenzahl, Druckauflösung je Bild, Umschlag – Ampel vor dem Upload | ✅ |
 | Modernes dunkles UI (Glas-Optik, Animationen, Lightbox mit Tastatursteuerung) | ✅ |
-| Seitenformat des konkreten Fotobuch-Anbieters | 🟡 Werte konfigurierbar, Anbieter offen |
+| Schriften im PDF einbetten (verlangt Saal) | 🟡 offen – siehe docs/06 |
 | SQLite statt JSON, SSE statt Polling | 🟡 geplant |
 
 ## So funktioniert die Auswahl
@@ -114,7 +118,8 @@ npm run dev                          # http://localhost:5173
 mit Breakpoints). VS Code dafür aus WSL mit `code .` öffnen.
 
 Bedienung: Bilder hochladen → **Analyse starten** → Auswahl prüfen (Regler „Strenge“, ＋/✓ auf den
-Karten, Klick öffnet die Lightbox) → optional **✎ Buch bearbeiten** → **PDF exportieren**.
+Karten, Klick öffnet die Lightbox) → optional **✎ Buch bearbeiten** → **Umschlag** anpassen →
+**Druckdateien** prüfen und **Innenteil** + **Umschlag** herunterladen → bei Saal Digital hochladen.
 
 Tests & Checks:
 
@@ -157,6 +162,10 @@ picture_classification/
 │   │       ├── selection.py          Score, Abzüge/Boni, Gruppen, Auswahl
 │   │       ├── chapters.py           Mini-Kapitel entlang der Reise
 │   │       ├── layout.py             Fotobuch-Seitenaufteilung (automatisch + manuell)
+│   │       ├── styles.py             Gestaltungsstile (Papier, Rahmen, Drehung)
+│   │       ├── print_profile.py      Anbieterprofile (Saal 28 × 28: Maße, Seitenzahlen, Rücken)
+│   │       ├── cover.py              Umschlag-Generator (Bausteine für PDF und Vorschau)
+│   │       ├── preflight.py          Prüfung vor dem Upload
 │   │       └── pdf/export.py         Druck-PDF (ReportLab)
 │   └── tests/
 ├── frontend/
@@ -169,7 +178,8 @@ picture_classification/
 │       ├── style.css       Design-Tokens & Basis-Styles
 │       └── components/     AppHeader, UploadZone, AnalysisPanel, SelectionBar,
 │                           PhotoCard, ScoreRing, Lightbox, BookPreview, BookPageView,
-│                           BookEditor, ToastStack
+│                           BookEditor, ImagePeek, StylePicker, CoverPanel, CoverView,
+│                           ImagePicker, ExportPanel, ToastStack
 └── data/                   Alben, Fotos, Exporte (nicht im Git)
 ```
 
@@ -193,7 +203,8 @@ picture_classification/
 | `CHAPTER_GAP_MINUTES` | `90` | Pause, ab der ein neues Kapitel beginnt |
 | `CHAPTER_MAX_IMAGES` / `CHAPTER_MIN_IMAGES` | `30` / `3` | Kapitel teilen / ab wie vielen Bildern eine Überschrift |
 | `TITLE_BAND_MM` | `16` | Platz für die Überschrift auf der ersten Kapitelseite |
-| `PAGE_WIDTH_MM` / `PAGE_HEIGHT_MM` | `297` / `210` | Endformat des Buchs |
+| `PRINT_PROFILE` | `saal_28x28` | Anbieterprofil (Format, Seitenzahlen, Umschlag) |
+| `PAGE_WIDTH_MM` / `PAGE_HEIGHT_MM` | `270` / `270` | Endformat einer Seite (muss zum Profil passen) |
 | `BLEED_MM` / `MARGIN_MM` / `GUTTER_MM` | `3` / `12` / `4` | Beschnitt, Rand, Bildabstand |
 | `PRINT_DPI` | `300` | Auflösung der Bilder im PDF |
 | `HERO_MIN_SCORE` | `8.5` | ab hier randlose Ganzseite (Querformat) |
@@ -209,7 +220,8 @@ picture_classification/
 | Fotobuch-Layout | Vorlagen, Highlight-Seiten, Vorschau, Druck-PDF | ✅ |
 | Story & Editor | Common-Sense-Kriterien, ähnliche Motive, Kapitel + Überschriften, Editor | ✅ Code fertig, Praxistest ausstehend |
 | 1 – Kalibrierung | Schwellwerte & Prompt an echten Fotos justieren, Modellvergleich | ⏳ |
-| 5 – Anbieterformat | Format/Seitenzahl des Fotobuch-Anbieters, Umschlag | ⏳ |
+| 5 – Anbieterformat | Saal 28 × 28: Doppelseiten, Umschlag-Generator, Preflight | ✅ Code fertig, Testbestellung ausstehend |
+| Editor & Stile | Gruppen-Alternativen, Großansicht, Kapitel teilen/verbinden, 13 Vorlagen, 4 Stile | ✅ Code fertig, Praxistest ausstehend |
 | 6 – Feinschliff | Undo im Editor, Umschlag, SQLite, SSE, optional SigLIP | ⏳ |
 
 ## Dokumentation

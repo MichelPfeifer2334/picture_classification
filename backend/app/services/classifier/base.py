@@ -14,3 +14,7 @@ class Classifier(Protocol):
     async def chapter_title(self, descriptions: list[str]) -> str:
         """Kurze Kapitelüberschrift aus den Beschreibungen der Bilder eines Abschnitts."""
         ...
+
+    async def album_title(self, descriptions: list[str]) -> str:
+        """Kurzer Albumtitel (Reiseziel), z. B. "Paris" – für Umschlag und Buchrücken."""
+        ...

@@ -11,17 +11,22 @@ from app.models.album import (
     Album,
     AlbumUpdate,
     BookUpdate,
+    Chapter,
     ChapterUpdate,
+    CoverUpdate,
     ImageRecord,
     ImageUpdate,
     JobState,
     UploadError,
     UploadResult,
 )
+from app.services.cover import CoverLayout, build_cover
 from app.services.image_processing import ALLOWED_SUFFIXES, InvalidImageError, process_upload
 from app.services.jobs import ClassificationRunner
 from app.services.layout import BookLayout, build_layout
-from app.services.pdf.export import build_pdf
+from app.services.pdf.export import book_sequence, render_cover, render_interior
+from app.services.preflight import Preflight, run_preflight
+from app.services.print_profile import get_profile
 from app.services.selection import curate
 from app.services.storage import AlbumNotFoundError, AlbumStore
 
@@ -74,6 +79,8 @@ async def update_album(
     async with store.locked(album_id) as album:
         if update.min_score is not None:
             album.min_score = update.min_score
+        if update.style is not None:
+            album.style = update.style
         curate(album, settings)
     return album
 
@@ -211,6 +218,13 @@ async def save_book(
             if img := album.find_image(image_id):
                 img.user_included = False
         album.book = [p for p in update.pages if p.image_ids]
+        if update.chapters is not None:
+            album.book_chapters = [
+                Chapter(id=c.id, title=c.title.strip(), title_edited=True) for c in update.chapters
+            ]
+        elif album.book_chapters is None:
+            # Einstieg in den manuellen Modus: automatische Kapitel übernehmen
+            album.book_chapters = [c.model_copy() for c in album.chapters]
         curate(album, settings)
     return build_layout(album, settings)
 
@@ -221,6 +235,7 @@ async def reset_book(album_id: str, store: StoreDep, settings: SettingsDep) -> B
     _load(store, album_id)
     async with store.locked(album_id) as album:
         album.book = None
+        album.book_chapters = None
     return build_layout(album, settings)
 
 
@@ -243,13 +258,83 @@ async def update_chapter(
     return build_layout(album, settings)
 
 
-@router.get("/{album_id}/export.pdf")
-async def export_pdf(
-    album_id: str, store: StoreDep, runner: RunnerDep, settings: SettingsDep
+# --- Umschlag, Preflight, Export ----------------------------------------------------
+
+
+def _cover(album: Album, settings: Settings) -> CoverLayout:
+    profile = get_profile(settings.print_profile)
+    _, info = book_sequence(build_layout(album, settings), profile)
+    return build_cover(album, profile, info.content_pages)
+
+
+@router.get("/{album_id}/cover", response_model=CoverLayout)
+def get_cover(album_id: str, store: StoreDep, settings: SettingsDep) -> CoverLayout:
+    """Umschlag-Layout (Rückseite · Rücken · Vorderseite) für Vorschau und Formular."""
+    return _cover(_load(store, album_id), settings)
+
+
+@router.patch("/{album_id}/cover", response_model=CoverLayout)
+async def update_cover(
+    album_id: str, update: CoverUpdate, store: StoreDep, settings: SettingsDep
+) -> CoverLayout:
+    """Titel, Untertitel, Rückentext, Bilder, Schreibrichtung. `null` = wieder automatisch."""
+    _load(store, album_id)
+    async with store.locked(album_id) as album:
+        ids = {img.id for img in album.images}
+        for key in update.model_fields_set:
+            value = getattr(update, key)
+            if key == "front_image_id" and value not in (None, *ids):
+                raise HTTPException(422, "Unbekanntes Titelbild")
+            if key == "back_image_id" and value not in (None, "", *ids):
+                raise HTTPException(422, "Unbekanntes Rückseitenbild")
+            if key == "spine_direction" and value is None:
+                continue
+            setattr(album.cover, key, value.strip() if isinstance(value, str) else value)
+    return _cover(album, settings)
+
+
+@router.get("/{album_id}/preflight", response_model=Preflight)
+def preflight(album_id: str, store: StoreDep, settings: SettingsDep) -> Preflight:
+    """Prüfung gegen die Vorgaben des Anbieters (Seitenzahl, Auflösung, Umschlag)."""
+    return run_preflight(_load(store, album_id), settings, get_profile(settings.print_profile))
+
+
+async def _export(
+    album_id: str, kind: str, store: AlbumStore, runner: ClassificationRunner, settings: Settings
 ) -> FileResponse:
     album = _load(store, album_id)
     if runner.is_running(album_id):
         raise HTTPException(409, "Analyse läuft noch")
-    out = store.export_path(album_id)
-    await asyncio.to_thread(build_pdf, album, store, settings, out)
-    return FileResponse(out, media_type="application/pdf", filename="fotobuch.pdf")
+    profile = get_profile(settings.print_profile)
+    out = store.export_path(album_id).with_name(f"{kind}.pdf")
+    if kind == "innenteil":
+        layout = build_layout(album, settings)
+        await asyncio.to_thread(render_interior, layout, album, store, settings, profile, out)
+    else:
+        cover = _cover(album, settings)
+        await asyncio.to_thread(render_cover, cover, album, store, settings, out)
+    return FileResponse(out, media_type="application/pdf", filename=f"fotobuch-{kind}.pdf")
+
+
+@router.get("/{album_id}/export/innenteil.pdf")
+async def export_interior(
+    album_id: str, store: StoreDep, runner: RunnerDep, settings: SettingsDep
+) -> FileResponse:
+    """Innenteil für den Anbieter (bei Saal: Doppelseiten, eine PDF-Seite pro Doppelseite)."""
+    return await _export(album_id, "innenteil", store, runner, settings)
+
+
+@router.get("/{album_id}/export/umschlag.pdf")
+async def export_cover(
+    album_id: str, store: StoreDep, runner: RunnerDep, settings: SettingsDep
+) -> FileResponse:
+    """Umschlag als eine Datei: Rückseite · Rücken · Vorderseite inkl. Beschnitt."""
+    return await _export(album_id, "umschlag", store, runner, settings)
+
+
+@router.get("/{album_id}/export.pdf")
+async def export_pdf(
+    album_id: str, store: StoreDep, runner: RunnerDep, settings: SettingsDep
+) -> FileResponse:
+    """Kompatibilität: liefert den Innenteil."""
+    return await _export(album_id, "innenteil", store, runner, settings)

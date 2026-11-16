@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.config import get_settings
+from app.services.print_profile import get_profile
 
 router = APIRouter(tags=["health"])
 
@@ -21,13 +22,18 @@ class HealthResponse(BaseModel):
 class AppConfig(BaseModel):
     model: str
     categories: list[str]
+    print_profile: str
 
 
 @router.get("/config", response_model=AppConfig)
 def config() -> AppConfig:
     """Konfiguration, die das Frontend braucht (Kategorienreihenfolge, Modellname)."""
     settings = get_settings()
-    return AppConfig(model=settings.ollama_model, categories=settings.categories)
+    return AppConfig(
+        model=settings.ollama_model,
+        categories=settings.categories,
+        print_profile=get_profile(settings.print_profile).name,
+    )
 
 
 @router.get("/health", response_model=HealthResponse)

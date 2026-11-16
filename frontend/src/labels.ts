@@ -1,4 +1,5 @@
 // Deutsche Anzeigenamen für Schlüssel aus dem Backend
+import type { Style } from './types'
 
 export const FLAG_LABELS: Record<string, string> = {
   blurry: 'Unscharf',
@@ -42,16 +43,38 @@ export const TEMPLATE_LABELS: Record<string, string> = {
   two_portrait: '2 Hochformate',
   two_landscape: '2 Querformate',
   mixed: 'Quer + Hoch',
-  three: '1 groß + 2',
+  three: '1 groß links + 2',
+  three_mirror: '1 groß rechts + 2',
+  three_stack: '1 Hoch + 2 Quer',
+  three_portrait: '3 Hochformate',
+  three_row: 'Panorama + 2',
   four: 'Raster 2 × 2',
+  four_feature: '1 groß + 3',
+  four_mosaic: 'Mosaik',
 }
 
 export const TEMPLATES_BY_COUNT: Record<number, string[]> = {
   1: ['single', 'full_bleed'],
   2: ['two_portrait', 'two_landscape', 'mixed'],
-  3: ['three'],
-  4: ['four'],
+  3: ['three', 'three_mirror', 'three_stack', 'three_portrait', 'three_row'],
+  4: ['four', 'four_feature', 'four_mosaic'],
 }
+
+export interface StyleInfo {
+  id: Style
+  label: string
+  description: string
+  paper: string
+  accent: string
+}
+
+/** Gestaltungsstile – müssen zu backend/app/services/styles.py passen. */
+export const STYLES: StyleInfo[] = [
+  { id: 'schlicht', label: 'Schlicht', description: 'Weiß, klare Linien', paper: '#ffffff', accent: '#29262b' },
+  { id: 'elegant', label: 'Elegant', description: 'Creme, Goldlinien, Serifen', paper: '#f7f2e8', accent: '#a8874a' },
+  { id: 'erinnerungen', label: 'Erinnerungen', description: 'Polaroids & Klebestreifen', paper: '#efe7da', accent: '#e9c98a' },
+  { id: 'magazin', label: 'Magazin', description: 'Groß, Versalien, Farbakzent', paper: '#ffffff', accent: '#ff5f6d' },
+]
 
 export const CATEGORY_ICONS: Record<string, string> = {
   strand: '🏖️',

@@ -1,22 +1,29 @@
 <script setup lang="ts">
 /**
- * Fotobuch-Editor: manuelle Korrekturen am Layout per Drag & Drop.
+ * Fotobuch-Editor: manuelle Korrekturen am Layout.
  *
- * Bedienung
+ * Bilder
  * - Bild auf ein anderes Bild ziehen      → tauschen (auch seitenübergreifend)
  * - Bild auf freie Seitenfläche ziehen    → auf diese Seite verschieben (max. 4)
  * - Bild auf "＋" zwischen Seiten ziehen  → neue Seite
  * - Bild in die Ablage ziehen / ✕         → aus dem Buch nehmen
  * - Bild aus der Ablage auf eine Seite    → ins Buch aufnehmen
+ * - Klick auf ein Bild                    → Großansicht mit Gruppe (tauschen / zusätzlich aufnehmen)
+ *
+ * Kapitel
+ * - "✂ Neues Kapitel ab hier"  teilt ein Kapitel vor dieser Seite
+ * - "⤒ Mit vorherigem verbinden" hängt das Kapitel an das vorherige an
  *
  * Jede Änderung wird sofort gespeichert (PUT /book); das Backend berechnet die Geometrie.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../api'
-import { TEMPLATE_LABELS, TEMPLATES_BY_COUNT, formatDay } from '../labels'
-import type { BookLayout, BookPage, ImageRecord } from '../types'
+import { api, type SaveBookOptions } from '../api'
+import { GROUP_LABELS, TEMPLATE_LABELS, TEMPLATES_BY_COUNT } from '../labels'
+import type { BookChapterSpec, BookLayout, BookPage, ImageRecord } from '../types'
 import { useAlbum } from '../useAlbum'
 import BookPageView from './BookPageView.vue'
+import ImagePeek from './ImagePeek.vue'
+import StylePicker from './StylePicker.vue'
 
 const { album, images, editorOpen, refresh, toast } = useAlbum()
 
@@ -26,6 +33,7 @@ const confirmReset = ref(false)
 const dragging = ref(false)
 const insertTarget = ref<number | null>(null)
 const trayActive = ref(false)
+const peekId = ref<string | null>(null)
 
 interface Drag {
   imageId: string
@@ -36,27 +44,38 @@ let drag: Drag | null = null
 
 // --- abgeleitete Werte -------------------------------------------------------------
 
-const placed = computed(
-  () => new Set(layout.value?.pages.flatMap((p) => p.cells.map((c) => c.image_id)) ?? []),
-)
+/** Bild-ID → Seitenindex */
+const placement = computed(() => {
+  const map = new Map<string, number>()
+  layout.value?.pages.forEach((p, i) => p.cells.forEach((c) => map.set(c.image_id, i)))
+  return map
+})
+
+const byTime = (a: ImageRecord, b: ImageRecord) =>
+  (a.metrics?.taken_at ?? a.filename).localeCompare(b.metrics?.taken_at ?? b.filename)
 
 const tray = computed(() => {
-  const rest = images.value.filter((i) => !placed.value.has(i.id) && i.status !== 'error')
-  const byTime = (a: ImageRecord, b: ImageRecord) =>
-    (a.metrics?.taken_at ?? a.filename).localeCompare(b.metrics?.taken_at ?? b.filename)
+  const rest = images.value.filter((i) => !placement.value.has(i.id) && i.status !== 'error')
   return {
     waiting: rest.filter((i) => i.included).sort(byTime),
-    excluded: rest.filter((i) => !i.included).sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0)),
+    excluded: rest.filter((i) => !i.included).sort(byTime),
   }
 })
 
-const chapterTitles = computed(
-  () => new Map((album.value?.chapters ?? []).map((c) => [c.id, c])),
+const chapterInfo = computed(
+  () => new Map((layout.value?.chapters ?? []).map((c) => [c.id, c])),
 )
 
 function startsChapter(index: number) {
   const pages = layout.value?.pages ?? []
   return index === 0 || pages[index]!.chapter_id !== pages[index - 1]!.chapter_id
+}
+
+function trayBadge(img: ImageRecord): string {
+  if (img.user_included === false) return 'entfernt'
+  if (img.duplicate_of && img.group_kind) return GROUP_LABELS[img.group_kind]
+  if (img.score !== null && album.value && img.score < album.value.min_score) return 'schwächer'
+  return ''
 }
 
 // --- Laden & Speichern ---------------------------------------------------------------
@@ -74,11 +93,19 @@ function specs(): BookPage[] {
   }))
 }
 
-async function commit(pages: BookPage[], include: string[] = [], exclude: string[] = []) {
+function chapterSpecs(): BookChapterSpec[] {
+  return (layout.value?.chapters ?? []).map((c) => ({ id: c.id, title: c.title }))
+}
+
+async function commit(pages: BookPage[], opts: SaveBookOptions = {}) {
   if (!album.value) return
   saving.value = true
   try {
-    layout.value = await api.saveBook(album.value.id, pages, include, exclude)
+    layout.value = await api.saveBook(album.value.id, pages, {
+      chapters: opts.chapters ?? chapterSpecs(),
+      include: opts.include,
+      exclude: opts.exclude,
+    })
     await refresh()
   } catch (e) {
     toast(e instanceof Error ? e.message : String(e), 'error')
@@ -93,6 +120,46 @@ function take(pages: BookPage[], d: Drag) {
   if (d.page === null) return
   pages[d.page]!.image_ids.splice(d.cell, 1)
   pages[d.page]!.template = 'auto'
+}
+
+function locate(pages: BookPage[], imageId: string) {
+  for (let p = 0; p < pages.length; p++) {
+    const cell = pages[p]!.image_ids.indexOf(imageId)
+    if (cell >= 0) return { page: p, cell }
+  }
+  return null
+}
+
+/** Platzierte Bild-ID mit der ähnlichsten Aufnahmezeit (für "passend einfügen"). */
+function nearestPlaced(imageId: string): string | null {
+  const t = images.value.find((i) => i.id === imageId)?.metrics?.taken_at
+  if (!t) return null
+  const target = new Date(t).getTime()
+  let best: string | null = null
+  let bestDiff = Infinity
+  for (const img of images.value) {
+    const ts = img.metrics?.taken_at
+    if (!ts || !placement.value.has(img.id) || img.id === imageId) continue
+    const diff = Math.abs(new Date(ts).getTime() - target)
+    if (diff < bestDiff) [best, bestDiff] = [img.id, diff]
+  }
+  return best
+}
+
+/** Bild neben anchor einfügen: auf dieselbe Seite (wenn Platz), sonst neue Seite danach. */
+function insertNear(pages: BookPage[], imageId: string, anchorId: string | null) {
+  const anchor = anchorId ? locate(pages, anchorId) : null
+  if (!anchor) {
+    pages.push({ template: 'auto', chapter_id: pages.at(-1)?.chapter_id ?? '', image_ids: [imageId] })
+    return
+  }
+  const page = pages[anchor.page]!
+  if (page.image_ids.length < 4) {
+    page.image_ids.splice(anchor.cell + 1, 0, imageId)
+    page.template = 'auto'
+  } else {
+    pages.splice(anchor.page + 1, 0, { template: 'auto', chapter_id: page.chapter_id, image_ids: [imageId] })
+  }
 }
 
 // --- Drag & Drop -------------------------------------------------------------------
@@ -124,7 +191,7 @@ function dropOnCell(pageIndex: number, cellIndex: number) {
     commit(pages)
   } else {
     pages[pageIndex]!.image_ids[cellIndex] = d.imageId
-    commit(pages, [d.imageId], [target])
+    commit(pages, { include: [d.imageId], exclude: [target] })
   }
 }
 
@@ -140,7 +207,7 @@ function dropOnPage(pageIndex: number) {
   take(pages, d)
   pages[pageIndex]!.image_ids.push(d.imageId)
   pages[pageIndex]!.template = 'auto'
-  commit(pages, d.page === null ? [d.imageId] : [])
+  commit(pages, { include: d.page === null ? [d.imageId] : [] })
 }
 
 function dropInsert(index: number) {
@@ -155,7 +222,7 @@ function dropInsert(index: number) {
     chapter_id: neighbour?.chapter_id ?? '',
     image_ids: [d.imageId],
   })
-  commit(pages, d.page === null ? [d.imageId] : [])
+  commit(pages, { include: d.page === null ? [d.imageId] : [] })
 }
 
 function dropOnTray() {
@@ -164,27 +231,51 @@ function dropOnTray() {
   if (!d || d.page === null) return
   const pages = specs()
   take(pages, d)
-  commit(pages, [], [d.imageId])
+  commit(pages, { exclude: [d.imageId] })
 }
 
-// --- Seiten-Aktionen -----------------------------------------------------------------
+// --- Bild-Aktionen -------------------------------------------------------------------
 
-function removeCell(pageIndex: number, cellIndex: number) {
+function removeImage(imageId: string) {
   const pages = specs()
-  const [id] = pages[pageIndex]!.image_ids.splice(cellIndex, 1)
-  pages[pageIndex]!.template = 'auto'
-  commit(pages, [], id ? [id] : [])
+  const loc = locate(pages, imageId)
+  if (!loc) return
+  pages[loc.page]!.image_ids.splice(loc.cell, 1)
+  pages[loc.page]!.template = 'auto'
+  commit(pages, { exclude: [imageId] })
 }
 
-function ownPage(pageIndex: number, cellIndex: number) {
+function ownPage(imageId: string) {
   const pages = specs()
-  const page = pages[pageIndex]!
+  const loc = locate(pages, imageId)
+  if (!loc) return
+  const page = pages[loc.page]!
   if (page.image_ids.length === 1) return
-  const [id] = page.image_ids.splice(cellIndex, 1)
+  page.image_ids.splice(loc.cell, 1)
   page.template = 'auto'
-  pages.splice(pageIndex + 1, 0, { template: 'single', chapter_id: page.chapter_id, image_ids: [id!] })
+  pages.splice(loc.page + 1, 0, { template: 'single', chapter_id: page.chapter_id, image_ids: [imageId] })
   commit(pages)
 }
+
+/** Großansicht: dieses Bild statt memberId verwenden (gleiche Stelle im Buch). */
+function replaceWith(imageId: string, memberId: string) {
+  const pages = specs()
+  const loc = locate(pages, memberId)
+  if (!loc) return
+  pages[loc.page]!.image_ids[loc.cell] = imageId
+  commit(pages, { include: [imageId], exclude: [memberId] })
+  toast('Bild getauscht', 'success')
+}
+
+/** Großansicht: zusätzlich aufnehmen – neben anchor oder passend zur Aufnahmezeit. */
+function addImage(imageId: string, anchorId: string | null) {
+  const pages = specs()
+  insertNear(pages, imageId, anchorId ?? nearestPlaced(imageId))
+  commit(pages, { include: [imageId] })
+  toast('Bild aufgenommen', 'success')
+}
+
+// --- Seiten & Kapitel ----------------------------------------------------------------
 
 function setTemplate(pageIndex: number, template: string) {
   const pages = specs()
@@ -192,24 +283,51 @@ function setTemplate(pageIndex: number, template: string) {
   commit(pages)
 }
 
+/** Seiten tauschen – die Kapitelzugehörigkeit bleibt an der Position (Kapitel bleiben am Stück). */
 function movePage(pageIndex: number, delta: number) {
   const pages = specs()
-  const target = pageIndex + delta
-  if (target < 0 || target >= pages.length) return
-  ;[pages[pageIndex], pages[target]] = [pages[target]!, pages[pageIndex]!]
+  const a = pages[pageIndex]
+  const b = pages[pageIndex + delta]
+  if (!a || !b) return
+  ;[a.template, b.template] = [b.template, a.template]
+  ;[a.image_ids, b.image_ids] = [b.image_ids, a.image_ids]
   commit(pages)
 }
 
 function deletePage(pageIndex: number) {
   const pages = specs()
   const [removed] = pages.splice(pageIndex, 1)
-  commit(pages, [], removed?.image_ids ?? [])
+  commit(pages, { exclude: removed?.image_ids ?? [] })
+}
+
+/** Kapitel vor dieser Seite teilen: diese und alle folgenden Seiten des Kapitels → neues Kapitel. */
+function splitChapter(pageIndex: number) {
+  const pages = specs()
+  const oldId = pages[pageIndex]!.chapter_id
+  const newId = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  for (let i = pageIndex; i < pages.length && pages[i]!.chapter_id === oldId; i++) {
+    pages[i]!.chapter_id = newId
+  }
+  commit(pages, { chapters: [...chapterSpecs(), { id: newId, title: '' }] })
+  toast('Neues Kapitel angelegt – gib ihm oben eine Überschrift', 'success')
+}
+
+/** Kapitel ab dieser Seite an das vorherige Kapitel anhängen. */
+function mergeChapter(pageIndex: number) {
+  const pages = specs()
+  const prevId = pages[pageIndex - 1]?.chapter_id
+  const oldId = pages[pageIndex]!.chapter_id
+  if (prevId === undefined) return
+  for (let i = pageIndex; i < pages.length && pages[i]!.chapter_id === oldId; i++) {
+    pages[i]!.chapter_id = prevId
+  }
+  const stillUsed = pages.some((p) => p.chapter_id === oldId)
+  commit(pages, { chapters: chapterSpecs().filter((c) => stillUsed || c.id !== oldId) })
 }
 
 async function saveTitle(chapterId: string, value: string) {
   if (!album.value || !chapterId) return
-  const current = chapterTitles.value.get(chapterId)?.title ?? ''
-  if (value.trim() === current) return
+  if (value.trim() === (chapterInfo.value.get(chapterId)?.title ?? '')) return
   try {
     layout.value = await api.updateChapter(album.value.id, chapterId, value)
     await refresh()
@@ -231,7 +349,9 @@ function close() {
 }
 
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') close()
+  if (e.key !== 'Escape') return
+  if (peekId.value) peekId.value = null
+  else close()
 }
 
 onMounted(() => {
@@ -251,15 +371,12 @@ onUnmounted(() => {
       <div>
         <h2>Fotobuch bearbeiten</h2>
         <p class="muted">
-          <template v-if="layout">{{ layout.pages.length }} Seiten</template>
+          <template v-if="layout">{{ layout.pages.length }} Seiten · {{ layout.chapters.length }} Kapitel</template>
           <span v-if="saving" class="saving">· speichert …</span>
           <span v-else-if="layout?.manual" class="saved">· gespeichert</span>
         </p>
       </div>
-      <p class="hint muted">
-        Bild auf Bild = tauschen · auf freie Fläche = verschieben · auf ＋ = neue Seite · in die Ablage =
-        entfernen
-      </p>
+      <StylePicker compact @changed="load" />
       <div class="bar-actions">
         <template v-if="confirmReset">
           <span class="muted">Alle manuellen Änderungen verwerfen?</span>
@@ -272,6 +389,11 @@ onUnmounted(() => {
         <button class="btn btn-primary" @click="close">Fertig</button>
       </div>
     </header>
+
+    <p class="hint muted">
+      Klick = groß ansehen · Bild auf Bild = tauschen · auf freie Fläche = verschieben · auf ＋ = neue
+      Seite · in die Ablage = entfernen
+    </p>
 
     <div v-if="layout && album" class="body">
       <main class="pages">
@@ -286,13 +408,24 @@ onUnmounted(() => {
             <span>＋</span>
           </div>
 
-          <article class="page-card">
+          <article class="page-card" :class="{ 'chapter-start': startsChapter(i) }">
             <div v-if="startsChapter(i)" class="chapter">
-              <span class="chapter-date">{{ formatDay(chapterTitles.get(page.chapter_id)?.start ?? null) }}</span>
+              <div class="chapter-row">
+                <span class="chapter-date">{{ chapterInfo.get(page.chapter_id)?.subtitle ?? 'Kapitel' }}</span>
+                <button
+                  v-if="i > 0"
+                  class="link"
+                  title="Dieses Kapitel an das vorherige anhängen"
+                  :disabled="saving"
+                  @click="mergeChapter(i)"
+                >
+                  ⤒ Mit vorherigem verbinden
+                </button>
+              </div>
               <input
                 class="chapter-title"
-                :value="chapterTitles.get(page.chapter_id)?.title ?? ''"
-                placeholder="Kapitelüberschrift (optional)"
+                :value="chapterInfo.get(page.chapter_id)?.title ?? ''"
+                placeholder="Kapitelüberschrift (leer = keine)"
                 maxlength="80"
                 @change="saveTitle(page.chapter_id, ($event.target as HTMLInputElement).value)"
                 @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -311,6 +444,15 @@ onUnmounted(() => {
                 </option>
               </select>
               <div class="page-tools">
+                <button
+                  v-if="!startsChapter(i)"
+                  class="split"
+                  title="Ab dieser Seite ein neues Kapitel beginnen"
+                  :disabled="saving"
+                  @click="splitChapter(i)"
+                >
+                  ✂ Kapitel
+                </button>
                 <button title="Seite nach vorne" :disabled="i === 0" @click="movePage(i, -1)">←</button>
                 <button title="Seite nach hinten" :disabled="i === layout.pages.length - 1" @click="movePage(i, 1)">→</button>
                 <button title="Seite löschen (Bilder aus dem Buch nehmen)" class="danger" @click="deletePage(i)">🗑</button>
@@ -322,11 +464,12 @@ onUnmounted(() => {
               :page="page"
               :album-id="album.id"
               editable
+              @cell-click="(c) => (peekId = page.cells[c]!.image_id)"
               @cell-drag="(c, e) => startDrag({ imageId: page.cells[c]!.image_id, page: i, cell: c }, e)"
               @cell-drop="(c) => dropOnCell(i, c)"
               @page-drop="dropOnPage(i)"
-              @cell-remove="(c) => removeCell(i, c)"
-              @cell-own-page="(c) => ownPage(i, c)"
+              @cell-remove="(c) => removeImage(page.cells[c]!.image_id)"
+              @cell-own-page="(c) => ownPage(page.cells[c]!.image_id)"
             />
           </article>
         </template>
@@ -350,36 +493,54 @@ onUnmounted(() => {
         @drop.prevent="dropOnTray"
       >
         <h3>Ablage</h3>
-        <p class="muted small">Hierher ziehen, um ein Bild aus dem Buch zu nehmen.</p>
+        <p class="muted small">Klick = groß ansehen · hierher ziehen = aus dem Buch nehmen</p>
 
         <template v-if="tray.waiting.length">
           <h4>Ausgewählt, noch ohne Seite <span>{{ tray.waiting.length }}</span></h4>
           <div class="tray-grid">
-            <img
+            <button
               v-for="img in tray.waiting"
               :key="img.id"
-              :src="api.thumbUrl(album.id, img.id)"
+              class="thumb waiting"
               :title="img.classification?.caption || img.filename"
               draggable="true"
-              class="waiting"
+              @click="peekId = img.id"
               @dragstart="startDrag({ imageId: img.id, page: null, cell: 0 }, $event)"
-            />
+            >
+              <img :src="api.thumbUrl(album.id, img.id)" alt="" draggable="false" />
+            </button>
           </div>
         </template>
 
         <h4>Nicht im Buch <span>{{ tray.excluded.length }}</span></h4>
         <div class="tray-grid">
-          <img
+          <button
             v-for="img in tray.excluded"
             :key="img.id"
-            :src="api.thumbUrl(album.id, img.id)"
+            class="thumb"
             :title="img.classification?.caption || img.filename"
             draggable="true"
+            @click="peekId = img.id"
             @dragstart="startDrag({ imageId: img.id, page: null, cell: 0 }, $event)"
-          />
+          >
+            <img :src="api.thumbUrl(album.id, img.id)" alt="" draggable="false" />
+            <span v-if="trayBadge(img)" class="why">{{ trayBadge(img) }}</span>
+          </button>
         </div>
       </aside>
     </div>
+
+    <ImagePeek
+      v-if="peekId"
+      :image-id="peekId"
+      :placement="placement"
+      @close="peekId = null"
+      @navigate="(id) => (peekId = id)"
+      @replace="(memberId) => replaceWith(peekId!, memberId)"
+      @add="(anchor) => addImage(peekId!, anchor)"
+      @remove="removeImage(peekId!)"
+      @own-page="ownPage(peekId!)"
+    />
   </div>
 </template>
 
@@ -406,7 +567,7 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 1rem;
   flex-wrap: wrap;
-  padding: 0.9rem 1.25rem;
+  padding: 0.8rem 1.1rem;
 }
 .bar h2 {
   font-size: 1.15rem;
@@ -426,9 +587,9 @@ onUnmounted(() => {
   color: var(--good);
 }
 .hint {
-  flex: 1;
   text-align: center;
-  min-width: 240px;
+  margin: 0.6rem 0 0;
+  font-size: 0.8rem;
 }
 .bar-actions {
   display: flex;
@@ -442,7 +603,7 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
   gap: 1rem;
-  margin-top: 1rem;
+  margin-top: 0.75rem;
 }
 .pages {
   overflow-y: auto;
@@ -487,12 +648,34 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 0.15rem;
   margin-bottom: 0.6rem;
+  padding-left: 0.6rem;
+  border-left: 3px solid var(--accent);
+}
+.chapter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 .chapter-date {
   font-size: 0.72rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--accent);
+}
+.link {
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  border-radius: 6px;
+}
+.link:hover {
+  color: var(--text);
+  background: var(--surface);
 }
 .chapter-title {
   font: inherit;
@@ -532,16 +715,23 @@ onUnmounted(() => {
   gap: 0.25rem;
 }
 .page-tools button {
-  width: 30px;
+  min-width: 30px;
   height: 30px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.page-tools button.split {
+  padding: 0 0.55rem;
+  color: var(--muted);
 }
 .page-tools button:hover:not(:disabled) {
   border-color: var(--border-strong);
+  color: var(--text);
 }
 .page-tools button.danger:hover {
   background: rgba(251, 113, 133, 0.2);
@@ -575,23 +765,46 @@ onUnmounted(() => {
   grid-template-columns: repeat(3, 1fr);
   gap: 0.4rem;
 }
-.tray-grid img {
-  width: 100%;
+.thumb {
+  position: relative;
+  padding: 0;
+  border: none;
+  background: none;
   aspect-ratio: 1;
-  object-fit: cover;
   border-radius: 8px;
-  cursor: grab;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
   filter: grayscale(0.6) brightness(0.75);
   transition: filter 0.2s, transform 0.2s var(--ease);
 }
-.tray-grid img.waiting {
+.thumb.waiting img {
   filter: none;
+}
+.thumb.waiting {
   outline: 2px solid var(--ok);
   outline-offset: -2px;
 }
-.tray-grid img:hover {
+.thumb:hover img {
   filter: none;
-  transform: scale(1.05);
+  transform: scale(1.06);
+}
+.thumb .why {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  padding: 0.05rem 0.3rem;
+  border-radius: 5px;
+  background: rgba(8, 8, 15, 0.75);
+  color: #fde68a;
+  pointer-events: none;
 }
 @media (max-width: 960px) {
   .body {
@@ -603,9 +816,6 @@ onUnmounted(() => {
   }
   .page-card {
     width: calc(100% - 2.5rem);
-  }
-  .hint {
-    display: none;
   }
 }
 </style>

@@ -52,8 +52,9 @@ class Settings(BaseSettings):
     title_band_mm: float = 16.0  # Platz für die Kapitelüberschrift auf der ersten Seite
 
     # --- Fotobuch-Layout (siehe docs/06-pdf-fotobuch.md) ----------------------
-    page_width_mm: float = 297.0  # Endformat (A4 quer)
-    page_height_mm: float = 210.0
+    print_profile: str = "saal_28x28"  # Anbieterprofil (services/print_profile.py)
+    page_width_mm: float = 270.0  # Endformat einer Seite – muss zum Profil passen
+    page_height_mm: float = 270.0
     bleed_mm: float = 3.0  # Beschnittzugabe je Seite
     margin_mm: float = 12.0  # Rand zum Seitenende
     gutter_mm: float = 4.0  # Abstand zwischen Bildern

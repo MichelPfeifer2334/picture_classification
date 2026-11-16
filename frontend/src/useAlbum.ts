@@ -4,7 +4,7 @@
 import { computed, ref } from 'vue'
 import { api } from './api'
 import { CATEGORY_ICONS, capitalize, formatDay } from './labels'
-import type { Album, Health, ImageRecord } from './types'
+import type { Album, Health, ImageRecord, Style } from './types'
 
 const UPLOAD_BATCH = 8
 const POLL_MS = 1500
@@ -242,6 +242,13 @@ async function setMinScore(value: number) {
   if (updated) setAlbum(updated)
 }
 
+async function setStyle(style: Style) {
+  const id = album.value?.id
+  if (!id) return
+  const updated = await guarded(() => api.updateAlbum(id, { style }))
+  if (updated) setAlbum(updated)
+}
+
 async function updateImage(imageId: string, patch: { included?: boolean | null; category?: string }) {
   const id = album.value?.id
   if (!id) return
@@ -296,6 +303,7 @@ export function useAlbum() {
     classify,
     refresh,
     setMinScore,
+    setStyle,
     updateImage,
     toggleIncluded,
     stopPolling,

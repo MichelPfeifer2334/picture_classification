@@ -1,12 +1,23 @@
 import type {
   Album,
   AppConfig,
+  BookChapterSpec,
   BookLayout,
   BookPage,
+  CoverLayout,
+  CoverPatch,
   Health,
   JobState,
+  Preflight,
+  Style,
   UploadResult,
 } from './types'
+
+export interface SaveBookOptions {
+  chapters?: BookChapterSpec[]
+  include?: string[]
+  exclude?: string[]
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init)
@@ -33,7 +44,7 @@ export const api = {
 
   createAlbum: () => request<Album>('/api/albums', { method: 'POST' }),
   getAlbum: (id: string) => request<Album>(`/api/albums/${id}`),
-  updateAlbum: (id: string, patch: { min_score?: number }) =>
+  updateAlbum: (id: string, patch: { min_score?: number; style?: Style }) =>
     request<Album>(`/api/albums/${id}`, json('PATCH', patch)),
 
   uploadImages(id: string, files: File[]) {
@@ -53,11 +64,22 @@ export const api = {
 
   // --- Fotobuch ---
   layout: (id: string) => request<BookLayout>(`/api/albums/${id}/layout`),
-  saveBook: (id: string, pages: BookPage[], include: string[] = [], exclude: string[] = []) =>
-    request<BookLayout>(`/api/albums/${id}/book`, json('PUT', { pages, include, exclude })),
+  saveBook: (id: string, pages: BookPage[], opts: SaveBookOptions = {}) =>
+    request<BookLayout>(
+      `/api/albums/${id}/book`,
+      json('PUT', { pages, chapters: opts.chapters, include: opts.include ?? [], exclude: opts.exclude ?? [] }),
+    ),
   resetBook: (id: string) => request<BookLayout>(`/api/albums/${id}/book`, { method: 'DELETE' }),
   updateChapter: (id: string, chapterId: string, title: string) =>
     request<BookLayout>(`/api/albums/${id}/chapters/${chapterId}`, json('PATCH', { title })),
+
+  // --- Umschlag & Druck ---
+  cover: (id: string) => request<CoverLayout>(`/api/albums/${id}/cover`),
+  updateCover: (id: string, patch: CoverPatch) =>
+    request<CoverLayout>(`/api/albums/${id}/cover`, json('PATCH', patch)),
+  preflight: (id: string) => request<Preflight>(`/api/albums/${id}/preflight`),
+  interiorUrl: (id: string) => `/api/albums/${id}/export/innenteil.pdf`,
+  coverUrl: (id: string) => `/api/albums/${id}/export/umschlag.pdf`,
 
   thumbUrl: (albumId: string, imageId: string) =>
     `/api/albums/${albumId}/images/${imageId}/thumb`,

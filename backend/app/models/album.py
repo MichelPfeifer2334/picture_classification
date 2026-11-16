@@ -41,6 +41,10 @@ STRENGTHS: tuple[str, ...] = get_args(Strength)
 Quality = Literal["good", "ok", "bad"]
 GroupKind = Literal["duplicate", "burst", "similar"]
 
+# Gestaltungsstile des Fotobuchs (siehe services/pdf/styles.py und docs/06-pdf-fotobuch.md)
+Style = Literal["schlicht", "elegant", "erinnerungen", "magazin"]
+SpineDirection = Literal["top_to_bottom", "bottom_to_top"]
+
 
 def _clamp01(v: Any) -> float:
     try:
@@ -173,6 +177,17 @@ class BookPage(BaseModel):
     image_ids: list[str] = []
 
 
+class CoverSettings(BaseModel):
+    """Umschlag. `None` heißt jeweils: automatisch bestimmen."""
+
+    title: str | None = None  # None = Vorschlag des Modells (album.suggested_title)
+    subtitle: str | None = None  # None = Zeitraum aus den Aufnahmedaten, "" = keiner
+    spine_text: str | None = None  # None = "TITEL · JAHR", "" = kein Text
+    front_image_id: str | None = None  # None = bestes Bild
+    back_image_id: str | None = None  # None = automatisch, "" = kein Bild
+    spine_direction: SpineDirection = "top_to_bottom"
+
+
 class Album(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -181,12 +196,21 @@ class Album(BaseModel):
     min_score: float = 6.0
     chapters: list[Chapter] = []
     book: list[BookPage] | None = None  # None = Layout automatisch, sonst manuell bearbeitet
+    book_chapters: list[Chapter] | None = None  # Kapitel im manuellen Layout (Editor)
+    style: Style = "schlicht"
+    suggested_title: str = ""  # Albumtitel-Vorschlag des Modells, z. B. "Paris"
+    cover: CoverSettings = CoverSettings()
 
     def find_image(self, image_id: str) -> ImageRecord | None:
         return next((img for img in self.images if img.id == image_id), None)
 
     def find_chapter(self, chapter_id: str) -> Chapter | None:
-        return next((c for c in self.chapters if c.id == chapter_id), None)
+        """Sucht zuerst in den Editor-Kapiteln (falls manuell), dann in den automatischen."""
+        for chapters in (self.book_chapters or [], self.chapters):
+            found = next((c for c in chapters if c.id == chapter_id), None)
+            if found is not None:
+                return found
+        return None
 
 
 # --- Request/Response-Modelle ---------------------------------------------------
@@ -204,6 +228,7 @@ class UploadResult(BaseModel):
 
 class AlbumUpdate(BaseModel):
     min_score: float | None = Field(default=None, ge=0, le=10)
+    style: Style | None = None
 
 
 class ImageUpdate(BaseModel):
@@ -213,13 +238,34 @@ class ImageUpdate(BaseModel):
     category: str | None = None
 
 
+class CoverUpdate(BaseModel):
+    """Nur gesendete Felder werden übernommen; `null` setzt ein Feld auf Automatik zurück."""
+
+    title: str | None = Field(default=None, max_length=40)
+    subtitle: str | None = Field(default=None, max_length=60)
+    spine_text: str | None = Field(default=None, max_length=40)
+    front_image_id: str | None = None
+    back_image_id: str | None = None
+    spine_direction: SpineDirection | None = None
+
+
 class ChapterUpdate(BaseModel):
     title: str = Field(max_length=80)
 
 
+class BookChapter(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=80)
+
+
 class BookUpdate(BaseModel):
-    """Manuelles Layout speichern. include/exclude ändern zugleich die Auswahl einzelner Bilder."""
+    """Manuelles Layout speichern. include/exclude ändern zugleich die Auswahl einzelner Bilder.
+
+    `chapters` (optional) legt die Kapitel des manuellen Layouts fest – so lassen sich Kapitel
+    im Editor teilen und zusammenführen.
+    """
 
     pages: list[BookPage]
+    chapters: list[BookChapter] | None = None
     include: list[str] = []
     exclude: list[str] = []

@@ -4,6 +4,8 @@ import AnalysisPanel from './components/AnalysisPanel.vue'
 import AppHeader from './components/AppHeader.vue'
 import BookEditor from './components/BookEditor.vue'
 import BookPreview from './components/BookPreview.vue'
+import CoverPanel from './components/CoverPanel.vue'
+import ExportPanel from './components/ExportPanel.vue'
 import Lightbox from './components/Lightbox.vue'
 import PhotoCard from './components/PhotoCard.vue'
 import SelectionBar from './components/SelectionBar.vue'
@@ -55,6 +57,8 @@ onUnmounted(stopPolling)
         <UploadZone :compact="true" />
         <AnalysisPanel />
         <BookPreview v-if="classified && !running" />
+        <CoverPanel v-if="classified && !running" />
+        <ExportPanel v-if="classified && !running" />
         <SelectionBar v-if="classified" />
 
         <section v-for="group in visibleGroups" :key="group.key" class="group">

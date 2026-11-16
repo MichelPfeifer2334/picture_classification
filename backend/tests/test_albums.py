@@ -38,6 +38,9 @@ class FakeClassifier:
     async def chapter_title(self, descriptions: list[str]) -> str:
         return "Testkapitel"
 
+    async def album_title(self, descriptions: list[str]) -> str:
+        return "Paris"
+
 
 def _jpeg(seed: int, size: tuple[int, int] = (800, 600)) -> bytes:
     """Bild mit eindeutigem, kontrastreichem Muster (scharf, unterscheidbarer pHash)."""
@@ -245,3 +248,98 @@ def test_corrupt_image_is_reported(client: TestClient) -> None:
     )
     assert resp.json()["added"] == []
     assert "Kein lesbares Bild" in resp.json()["errors"][0]["error"]
+
+
+def test_styles_render_pdf_and_editor_chapters(client: TestClient) -> None:
+    album_id = client.post("/api/albums").json()["id"]
+    ids = [
+        img["id"]
+        for img in client.post(
+            f"/api/albums/{album_id}/images",
+            files=[("files", (f"{n}.jpg", _jpeg(n + 60), "image/jpeg")) for n in range(4)],
+        ).json()["added"]
+    ]
+    client.post(f"/api/albums/{album_id}/classify")
+    _wait_done(client, album_id)
+
+    # Kapitel im Editor teilen: zweites Kapitel mit eigener Überschrift
+    layout = client.put(
+        f"/api/albums/{album_id}/book",
+        json={
+            "pages": [
+                {"chapter_id": "a", "image_ids": ids[:2]},
+                {"chapter_id": "b", "image_ids": ids[2:]},
+            ],
+            "chapters": [{"id": "a", "title": "Ankunft"}, {"id": "b", "title": "Altstadt"}],
+        },
+    ).json()
+    assert [p["title"] for p in layout["pages"]] == ["Ankunft", "Altstadt"]
+
+    layout = client.patch(f"/api/albums/{album_id}/chapters/b", json={"title": "Hafen"}).json()
+    assert layout["pages"][1]["title"] == "Hafen"
+
+    for style in ("schlicht", "elegant", "erinnerungen", "magazin"):
+        album = client.patch(f"/api/albums/{album_id}", json={"style": style}).json()
+        assert album["style"] == style
+        pdf = client.get(f"/api/albums/{album_id}/export.pdf")
+        assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+
+    assert client.patch(f"/api/albums/{album_id}", json={"style": "kitsch"}).status_code == 422
+
+    # Zurücksetzen verwirft auch die Editor-Kapitel
+    layout = client.delete(f"/api/albums/{album_id}/book").json()
+    assert all(c["id"] not in ("a", "b") for c in layout["chapters"])
+
+
+def _mediaboxes(pdf: bytes) -> list[tuple[float, float]]:
+    import re
+
+    return [
+        (float(w), float(h))
+        for w, h in re.findall(rb"/MediaBox \[\s*0 0 ([\d.]+) ([\d.]+)\s*\]", pdf)
+    ]
+
+
+def test_cover_preflight_and_saal_export(client: TestClient) -> None:
+    album_id = client.post("/api/albums").json()["id"]
+    client.post(
+        f"/api/albums/{album_id}/images",
+        files=[("files", (f"{n}.jpg", _jpeg(n + 80), "image/jpeg")) for n in range(5)],
+    )
+    client.post(f"/api/albums/{album_id}/classify")
+    album = _wait_done(client, album_id)
+    assert album["suggested_title"] == "Paris"
+
+    cover = client.get(f"/api/albums/{album_id}/cover").json()
+    assert cover["title"] == "Paris"
+    assert cover["spine_text"].startswith("PARIS")
+    assert cover["pages"] == 26  # wenige Bilder → Mindestseitenzahl
+    assert cover["front_image_id"] is not None
+
+    cover = client.patch(
+        f"/api/albums/{album_id}/cover",
+        json={"title": "Paris im Sommer", "spine_text": "PARIS", "back_image_id": ""},
+    ).json()
+    assert cover["title"] == "Paris im Sommer" and cover["spine_text"] == "PARIS"
+    assert cover["back_image_id"] is None
+    assert len(cover["images"]) == 1
+    bad = client.patch(f"/api/albums/{album_id}/cover", json={"front_image_id": "nope"})
+    assert bad.status_code == 422
+
+    pre = client.get(f"/api/albums/{album_id}/preflight").json()
+    assert pre["total_pages"] == 26 and pre["blank_pages"] == 26 - 2 - pre["content_pages"]
+    assert any(i["level"] == "info" for i in pre["issues"])  # leere Seiten am Ende
+    # Testbilder haben nur 800 × 600 px → auf einer 27-cm-Seite viel zu wenig Auflösung
+    assert pre["ok"] is False
+    assert any("dpi" in i["text"] and i["level"] == "error" for i in pre["issues"])
+
+    mm = 72 / 25.4
+    interior = client.get(f"/api/albums/{album_id}/export/innenteil.pdf")
+    assert interior.status_code == 200
+    boxes = _mediaboxes(interior.content)
+    assert len(boxes) == 13  # 26 Seiten = 13 Doppelseiten
+    assert abs(boxes[0][0] - 546 * mm) < 0.5 and abs(boxes[0][1] - 276 * mm) < 0.5
+
+    umschlag = client.get(f"/api/albums/{album_id}/export/umschlag.pdf")
+    (w, h), *_ = _mediaboxes(umschlag.content)
+    assert abs(w - 6833 / 300 * 72) < 0.5 and abs(h - 3402 / 300 * 72) < 0.5
