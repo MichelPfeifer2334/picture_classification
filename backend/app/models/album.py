@@ -191,6 +191,9 @@ class CoverSettings(BaseModel):
 class Album(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime | None = None  # wird bei jedem Speichern gesetzt
+    name: str = ""  # vom Nutzer vergebener Name
+    saved: bool = False  # bewusst gespeichert → erscheint in der Album-Liste
     images: list[ImageRecord] = []
     job: JobState = JobState()
     min_score: float = 6.0
@@ -229,6 +232,27 @@ class UploadResult(BaseModel):
 class AlbumUpdate(BaseModel):
     min_score: float | None = Field(default=None, ge=0, le=10)
     style: Style | None = None
+    name: str | None = Field(default=None, max_length=80)
+    saved: bool | None = None
+
+
+class AlbumSummary(BaseModel):
+    """Kurzinfo für die Album-Liste auf der Startseite."""
+
+    id: str
+    name: str
+    saved: bool
+    created_at: datetime
+    updated_at: datetime | None
+    image_count: int
+    selected_count: int
+    classified: bool  # mindestens ein Bild analysiert
+    thumb_image_id: str | None  # Titelbild für die Karte
+    running: bool = False
+
+
+class CleanupResult(BaseModel):
+    deleted: int
 
 
 class ImageUpdate(BaseModel):

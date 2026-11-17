@@ -1,5 +1,6 @@
 import type {
   Album,
+  AlbumSummary,
   AppConfig,
   BookChapterSpec,
   BookLayout,
@@ -44,7 +45,17 @@ export const api = {
 
   createAlbum: () => request<Album>('/api/albums', { method: 'POST' }),
   getAlbum: (id: string) => request<Album>(`/api/albums/${id}`),
-  updateAlbum: (id: string, patch: { min_score?: number; style?: Style }) =>
+  listAlbums: () => request<AlbumSummary[]>('/api/albums'),
+  deleteAlbum: async (id: string) => {
+    const resp = await fetch(`/api/albums/${id}`, { method: 'DELETE' })
+    if (!resp.ok && resp.status !== 404) throw new Error(`${resp.status}: Löschen fehlgeschlagen`)
+  },
+  cleanupUnsaved: (keep?: string) =>
+    request<{ deleted: number }>(`/api/albums/cleanup${keep ? `?keep=${keep}` : ''}`, { method: 'POST' }),
+  updateAlbum: (
+    id: string,
+    patch: { min_score?: number; style?: Style; name?: string; saved?: boolean },
+  ) =>
     request<Album>(`/api/albums/${id}`, json('PATCH', patch)),
 
   uploadImages(id: string, files: File[]) {

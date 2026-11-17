@@ -73,6 +73,9 @@ export interface BookPage {
 export interface Album {
   id: string
   created_at: string
+  updated_at: string | null
+  name: string
+  saved: boolean
   images: ImageRecord[]
   job: JobState
   min_score: number
@@ -245,4 +248,19 @@ export interface Preflight {
   spine_mm: number
   ok: boolean
   issues: PreflightIssue[]
+}
+
+// --- Album-Liste ---
+
+export interface AlbumSummary {
+  id: string
+  name: string
+  saved: boolean
+  created_at: string
+  updated_at: string | null
+  image_count: number
+  selected_count: number
+  classified: boolean
+  thumb_image_id: string | null
+  running: boolean
 }

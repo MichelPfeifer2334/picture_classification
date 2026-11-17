@@ -27,6 +27,7 @@ manuellem Editor und druckfertigem PDF.
 | Feature | Status |
 |---|---|
 | Upload per Drag & Drop, Datei- oder Ordnerauswahl (JPG, PNG, HEIC, …) | ✅ |
+| **Alben speichern und wieder öffnen** (Startseite mit gespeicherten Alben, umbenennen, löschen, aufräumen) | ✅ |
 | EXIF-Drehung und Aufnahmezeit, Thumbnails, verkleinerter Modell-Input | ✅ |
 | KI-Bewertung wie ein Fotoredakteur: Score 1–10, Mängel, Stärken, Motiv, Personen, Bildschwerpunkt | ✅ |
 | Common-Sense-Kriterien für Personen: Augen offen, nicht angeschnitten, freundlicher Ausdruck | ✅ |
@@ -175,8 +176,10 @@ picture_classification/
 │       ├── App.vue         Seitenaufbau
 │       ├── useAlbum.ts     App-Zustand & Aktionen
 │       ├── api.ts, types.ts, labels.ts
+│       ├── folderPicker.ts Ordner einlesen (Dialog und Drag & Drop)
 │       ├── style.css       Design-Tokens & Basis-Styles
 │       └── components/     AppHeader, UploadZone, AnalysisPanel, SelectionBar,
+│                           AlbumLibrary, SaveDialog,
 │                           PhotoCard, ScoreRing, Lightbox, BookPreview, BookPageView,
 │                           BookEditor, ImagePeek, StylePicker, CoverPanel, CoverView,
 │                           ImagePicker, ExportPanel, ToastStack

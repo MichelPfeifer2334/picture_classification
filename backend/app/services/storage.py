@@ -9,14 +9,19 @@ data/albums/<album_id>/
 """
 
 import asyncio
+import logging
 import re
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.models.album import Album
+
+log = logging.getLogger(__name__)
 
 _ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -80,10 +85,31 @@ class AlbumStore:
         return Album.model_validate_json(path.read_text(encoding="utf-8"))
 
     def save(self, album: Album) -> None:
+        album.updated_at = datetime.now(UTC)
         path = self.album_dir(album.id) / "album.json"
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(album.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(path)  # atomar ersetzen, damit nie eine halbe Datei entsteht
+
+    def list_all(self) -> list[Album]:
+        """Alle Alben auf der Festplatte (beschädigte Dateien werden übersprungen)."""
+        albums: list[Album] = []
+        for path in self.root.glob("*/album.json"):
+            if not _ID_RE.match(path.parent.name):
+                continue
+            try:
+                albums.append(Album.model_validate_json(path.read_text(encoding="utf-8")))
+            except Exception:
+                log.warning("Album nicht lesbar, übersprungen: %s", path)
+        return albums
+
+    def delete(self, album_id: str) -> None:
+        """Album mit allen Bildern und Exporten löschen."""
+        path = self.album_dir(album_id)
+        if not (path / "album.json").exists():
+            raise AlbumNotFoundError(album_id)
+        shutil.rmtree(path)
+        self._locks.pop(album_id, None)
 
     @asynccontextmanager
     async def locked(self, album_id: str) -> AsyncIterator[Album]:

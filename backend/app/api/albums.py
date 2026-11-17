@@ -9,10 +9,12 @@ from app.api.deps import get_runner, get_store
 from app.core.config import Settings, get_settings
 from app.models.album import (
     Album,
+    AlbumSummary,
     AlbumUpdate,
     BookUpdate,
     Chapter,
     ChapterUpdate,
+    CleanupResult,
     CoverUpdate,
     ImageRecord,
     ImageUpdate,
@@ -66,6 +68,54 @@ def create_album(store: StoreDep, settings: SettingsDep) -> Album:
     return album
 
 
+def _summary(album: Album, runner: ClassificationRunner) -> AlbumSummary:
+    included = [i for i in album.images if i.included]
+    best = max(included, key=lambda i: i.rank or 0.0, default=None)
+    thumb = album.cover.front_image_id or (best.id if best else None)
+    if thumb is None and album.images:
+        thumb = album.images[0].id
+    return AlbumSummary(
+        id=album.id,
+        name=album.name or album.cover.title or album.suggested_title or "Unbenanntes Album",
+        saved=album.saved,
+        created_at=album.created_at,
+        updated_at=album.updated_at,
+        image_count=len(album.images),
+        selected_count=len(included),
+        classified=any(i.status == "classified" for i in album.images),
+        thumb_image_id=thumb,
+        running=runner.is_running(album.id),
+    )
+
+
+@router.get("", response_model=list[AlbumSummary])
+def list_albums(store: StoreDep, runner: RunnerDep) -> list[AlbumSummary]:
+    """Alle Alben, zuletzt bearbeitete zuerst (gespeicherte und nicht gespeicherte)."""
+    albums = sorted(store.list_all(), key=lambda a: a.updated_at or a.created_at, reverse=True)
+    return [_summary(a, runner) for a in albums]
+
+
+@router.post("/cleanup", response_model=CleanupResult)
+def cleanup_unsaved(store: StoreDep, runner: RunnerDep, keep: str | None = None) -> CleanupResult:
+    """Nicht gespeicherte Alben löschen (außer `keep` = gerade geöffnetes Album)."""
+    deleted = 0
+    for album in store.list_all():
+        if album.saved or album.id == keep or runner.is_running(album.id):
+            continue
+        store.delete(album.id)
+        deleted += 1
+    return CleanupResult(deleted=deleted)
+
+
+@router.delete("/{album_id}", status_code=204)
+def delete_album(album_id: str, store: StoreDep, runner: RunnerDep) -> None:
+    """Album mit allen Bildern und Exporten endgültig löschen."""
+    _load(store, album_id)
+    if runner.is_running(album_id):
+        raise HTTPException(409, "Analyse läuft noch")
+    store.delete(album_id)
+
+
 @router.get("/{album_id}", response_model=Album)
 def get_album(album_id: str, store: StoreDep) -> Album:
     return _load(store, album_id)
@@ -81,6 +131,10 @@ async def update_album(
             album.min_score = update.min_score
         if update.style is not None:
             album.style = update.style
+        if update.name is not None:
+            album.name = update.name.strip()
+        if update.saved is not None:
+            album.saved = update.saved
         curate(album, settings)
     return album
 

@@ -343,3 +343,35 @@ def test_cover_preflight_and_saal_export(client: TestClient) -> None:
     umschlag = client.get(f"/api/albums/{album_id}/export/umschlag.pdf")
     (w, h), *_ = _mediaboxes(umschlag.content)
     assert abs(w - 6833 / 300 * 72) < 0.5 and abs(h - 3402 / 300 * 72) < 0.5
+
+
+def test_save_list_open_and_delete_albums(client: TestClient) -> None:
+    a = client.post("/api/albums").json()["id"]
+    b = client.post("/api/albums").json()["id"]
+    client.post(f"/api/albums/{a}/images", files=[("files", ("a.jpg", _jpeg(101), "image/jpeg"))])
+
+    # Speichern = Name + saved
+    album = client.patch(f"/api/albums/{a}", json={"name": "Paris 2026", "saved": True}).json()
+    assert album["name"] == "Paris 2026" and album["saved"] is True
+    assert album["updated_at"] is not None
+
+    listing = client.get("/api/albums").json()
+    by_id = {x["id"]: x for x in listing}
+    assert by_id[a]["name"] == "Paris 2026" and by_id[a]["saved"] is True
+    assert by_id[a]["image_count"] == 1 and by_id[a]["thumb_image_id"]
+    assert by_id[b]["saved"] is False
+    assert listing[0]["id"] == a  # zuletzt bearbeitet zuerst
+
+    # Wieder öffnen = Album laden
+    assert client.get(f"/api/albums/{a}").json()["name"] == "Paris 2026"
+
+    # Aufräumen löscht nur nicht gespeicherte (außer dem gerade geöffneten)
+    c = client.post("/api/albums").json()["id"]
+    assert client.post(f"/api/albums/cleanup?keep={c}").json() == {"deleted": 1}
+    ids = {x["id"] for x in client.get("/api/albums").json()}
+    assert ids == {a, c}
+
+    # Löschen
+    assert client.delete(f"/api/albums/{a}").status_code == 204
+    assert client.get(f"/api/albums/{a}").status_code == 404
+    assert client.delete(f"/api/albums/{a}").status_code == 404

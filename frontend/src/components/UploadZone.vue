@@ -1,35 +1,55 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { IMAGE_EXT, filesFromDrop, pickDirectory, supportsDirectoryPicker } from '../folderPicker'
 import { useAlbum } from '../useAlbum'
 
 defineProps<{ compact: boolean }>()
 
-const { busy, uploading, upload } = useAlbum()
-
-const IMAGE_EXT = /\.(jpe?g|png|webp|heic|heif|tiff?|bmp)$/i
+const { busy, uploading, upload, toast } = useAlbum()
 
 const dragging = ref(false)
+const reading = ref(false) // Ordner wird gerade eingelesen
 const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
 
 onMounted(() => {
-  // Ordnerauswahl: Attribut per JS setzen (nicht im TS-Typ von <input> enthalten)
+  // Notlösung für Browser ohne showDirectoryPicker (Attribut fehlt im TS-Typ von <input>)
   folderInput.value?.setAttribute('webkitdirectory', '')
 })
 
-function submit(list: FileList | null | undefined) {
-  const files = Array.from(list ?? []).filter((f) => IMAGE_EXT.test(f.name))
-  if (files.length) upload(files)
+function submit(files: File[]) {
+  const images = files.filter((f) => IMAGE_EXT.test(f.name))
+  if (images.length) upload(images)
+  else toast('Keine Bilder gefunden (JPG, PNG, HEIC, WebP …)', 'info')
+}
+
+async function withReading(fn: () => Promise<File[] | null>) {
+  reading.value = true
+  try {
+    const files = await fn()
+    if (files) submit(files)
+  } catch (e) {
+    toast(`Ordner konnte nicht gelesen werden: ${e instanceof Error ? e.message : e}`, 'error')
+  } finally {
+    reading.value = false
+  }
+}
+
+function pickFolder() {
+  if (supportsDirectoryPicker()) withReading(pickDirectory)
+  else folderInput.value?.click()
 }
 
 function onDrop(e: DragEvent) {
   dragging.value = false
-  if (!busy.value) submit(e.dataTransfer?.files)
+  if (busy.value || !e.dataTransfer) return
+  const data = e.dataTransfer
+  withReading(() => filesFromDrop(data))
 }
 
 function onChange(e: Event) {
   const input = e.target as HTMLInputElement
-  submit(input.files)
+  submit(Array.from(input.files ?? []))
   input.value = ''
 }
 </script>
@@ -65,8 +85,10 @@ function onChange(e: Event) {
         <p class="muted">JPG, PNG, HEIC – einzeln oder als ganzer Ordner</p>
       </div>
       <div class="buttons">
-        <button class="btn btn-primary" :disabled="busy" @click="folderInput?.click()">Ordner wählen</button>
-        <button class="btn" :disabled="busy" @click="fileInput?.click()">Dateien wählen</button>
+        <button class="btn btn-primary" :disabled="busy || reading" @click="pickFolder">
+          {{ reading ? 'Ordner wird gelesen …' : 'Ordner wählen' }}
+        </button>
+        <button class="btn" :disabled="busy || reading" @click="fileInput?.click()">Dateien wählen</button>
       </div>
     </template>
 

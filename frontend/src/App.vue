@@ -11,6 +11,7 @@ import PhotoCard from './components/PhotoCard.vue'
 import SelectionBar from './components/SelectionBar.vue'
 import ToastStack from './components/ToastStack.vue'
 import UploadZone from './components/UploadZone.vue'
+import AlbumLibrary from './components/AlbumLibrary.vue'
 import { useAlbum } from './useAlbum'
 
 const {
@@ -49,8 +50,9 @@ onUnmounted(stopPolling)
           <li><b>1</b> Bilder hochladen</li>
           <li><b>2</b> KI-Analyse</li>
           <li><b>3</b> Auswahl prüfen</li>
-          <li><b>4</b> PDF exportieren</li>
+          <li><b>4</b> Umschlag &amp; Druckdateien</li>
         </ol>
+        <AlbumLibrary />
       </section>
 
       <template v-else-if="album">

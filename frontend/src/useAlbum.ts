@@ -4,11 +4,10 @@
 import { computed, ref } from 'vue'
 import { api } from './api'
 import { CATEGORY_ICONS, capitalize, formatDay } from './labels'
-import type { Album, Health, ImageRecord, Style } from './types'
+import type { Album, AlbumSummary, Health, ImageRecord, Style } from './types'
 
 const UPLOAD_BATCH = 8
 const POLL_MS = 1500
-const STORAGE_KEY = 'fotobuch.albumId'
 
 export type Filter = 'all' | 'selected' | 'rejected' | 'duplicates'
 export type GroupMode = 'story' | 'category'
@@ -34,6 +33,7 @@ const uploading = ref<{ done: number; total: number } | null>(null)
 const toasts = ref<Toast[]>([])
 const filter = ref<Filter>('all')
 const categoryFilter = ref<string | null>(null)
+const library = ref<AlbumSummary[]>([]) // alle Alben auf der Festplatte (Startseite)
 const groupMode = ref<GroupMode>('story')
 const editorOpen = ref(false)
 const layoutVersion = ref(0) // erhöht sich bei jeder Änderung → Vorschau lädt neu
@@ -134,15 +134,6 @@ function toast(text: string, kind: Toast['kind'] = 'info') {
   window.setTimeout(() => (toasts.value = toasts.value.filter((t) => t.id !== id)), 4500)
 }
 
-function remember(id: string | null) {
-  try {
-    if (id) localStorage.setItem(STORAGE_KEY, id)
-    else localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    /* localStorage evtl. gesperrt */
-  }
-}
-
 async function guarded<T>(fn: () => Promise<T>): Promise<T | undefined> {
   try {
     return await fn()
@@ -162,24 +153,83 @@ function setAlbum(next: Album) {
 
 // --- Aktionen ---------------------------------------------------------------------
 
+/** App-Start: immer mit leerem Album beginnen – gespeicherte Alben stehen in der Liste. */
 async function init() {
   health.value = (await guarded(api.health)) ?? null
   categories.value = (await guarded(api.config))?.categories ?? []
-  let saved: string | null = null
+  await loadLibrary()
   try {
-    saved = localStorage.getItem(STORAGE_KEY)
+    localStorage.removeItem('fotobuch.albumId') // Altlast früherer Versionen entfernen
   } catch {
-    /* ignorieren */
-  }
-  if (saved) {
-    try {
-      setAlbum(await api.getAlbum(saved))
-      if (running.value) startPolling()
-    } catch {
-      remember(null)
-    }
+    /* localStorage evtl. gesperrt */
   }
 }
+
+// --- Album-Verwaltung --------------------------------------------------------------
+
+async function loadLibrary() {
+  library.value = (await guarded(api.listAlbums)) ?? []
+}
+
+const unsaved = computed(() =>
+  library.value.filter((a) => !a.saved && a.id !== album.value?.id && a.image_count > 0),
+)
+
+/** Gespeichertes Album öffnen – mit Analyse, Auswahl, Layout, Umschlag und Stil. */
+async function openAlbum(id: string) {
+  stopPolling()
+  const loaded = await guarded(() => api.getAlbum(id))
+  if (!loaded) return
+  filter.value = 'all'
+  categoryFilter.value = null
+  editorOpen.value = false
+  setAlbum(loaded)
+  if (running.value) startPolling()
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+/** Zurück zur Startseite (Album bleibt auf der Festplatte). */
+async function closeAlbum() {
+  stopPolling()
+  album.value = null
+  editorOpen.value = false
+  await loadLibrary()
+}
+
+/** Speichern = Namen vergeben; danach wird jede Änderung automatisch mitgesichert. */
+async function saveAlbum(name: string) {
+  const id = album.value?.id
+  if (!id) return
+  const updated = await guarded(() => api.updateAlbum(id, { name, saved: true }))
+  if (updated) {
+    setAlbum(updated)
+    toast(`„${updated.name}“ gespeichert`, 'success')
+  }
+}
+
+async function deleteAlbum(id: string) {
+  await guarded(() => api.deleteAlbum(id))
+  if (album.value?.id === id) album.value = null
+  await loadLibrary()
+  toast('Album gelöscht', 'success')
+}
+
+async function cleanupUnsaved() {
+  const result = await guarded(() => api.cleanupUnsaved(album.value?.id))
+  if (result) toast(`${result.deleted} nicht gespeicherte Analyse(n) gelöscht`, 'success')
+  await loadLibrary()
+}
+
+/** Namensvorschlag: Titel (Modell) + Monat/Jahr der Aufnahmen. */
+const suggestedName = computed(() => {
+  const a = album.value
+  if (!a) return ''
+  const title = a.cover.title || a.suggested_title || 'Urlaub'
+  const times = a.images.map((i) => i.metrics?.taken_at).filter((t): t is string => !!t).sort()
+  if (!times.length) return title
+  const fmt = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' })
+  return `${title} · ${fmt.format(new Date(times[0]!))}`
+})
 
 async function newAlbum() {
   stopPolling()
@@ -188,7 +238,6 @@ async function newAlbum() {
     album.value = created
     filter.value = 'all'
     categoryFilter.value = null
-    remember(created.id)
   }
 }
 
@@ -280,6 +329,9 @@ export function useAlbum() {
     album,
     uploading,
     toasts,
+    library,
+    unsaved,
+    suggestedName,
     filter,
     categoryFilter,
     groupMode,
@@ -298,6 +350,12 @@ export function useAlbum() {
     eta,
     // Aktionen
     init,
+    loadLibrary,
+    openAlbum,
+    closeAlbum,
+    saveAlbum,
+    deleteAlbum,
+    cleanupUnsaved,
     newAlbum,
     upload,
     classify,
